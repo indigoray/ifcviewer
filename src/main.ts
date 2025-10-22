@@ -23,7 +23,7 @@ type UiController = {
   setBusy(active: boolean): void;
   setStatus(message: string): void;
   setProgress(value: number | null): void;
-  onSample(handler: () => void): void;
+  onSample(handler: (selectedFile: string) => void): void;
   onFile(handler: (file: File) => void | Promise<void>): void;
   updateModelsTab(elements: { modelsList: HTMLElement; loadBtn: HTMLElement }): void;
   updatePropertiesTab(propertiesTable: HTMLElement): void;
@@ -235,11 +235,12 @@ async function bootstrap() {
     updatePropertiesTable({ modelIdMap: {} });
   });
 
-  ui.onSample(() =>
+  ui.onSample((selectedFile: string) =>
     queue(async () => {
-      ui.setStatus("샘플 IFC 파일을 다운로드 중입니다.");
-      const buffer = await fetchIfc(SAMPLE_IFC_URL);
-      await loadIfcBuffer(buffer, "샘플 모델");
+      const fileName = selectedFile.split('/').pop() || "IFC 파일";
+      ui.setStatus(`${fileName}을 다운로드 중입니다.`);
+      const buffer = await fetchIfc(selectedFile);
+      await loadIfcBuffer(buffer, fileName.replace('.ifc', ''));
     })
   );
 
@@ -291,6 +292,10 @@ async function bootstrap() {
 
     ui.setProgress(null);
     ui.setStatus(`${label} 로딩이 완료되었습니다.`);
+    
+    // TODO: frag 파일로 저장 기능 구현 필요
+    // @thatopen/components의 적절한 export 메서드를 찾아야 함
+    
     await registerModelTools({
       model,
       world,
@@ -409,8 +414,32 @@ function buildUi(root: HTMLElement): UiController {
   const modelsSectionTitle = document.createElement("h3");
   modelsSectionTitle.textContent = "모델 불러오기";
 
+  // IFC 파일 선택 드롭다운
+  const sampleContainer = document.createElement("div");
+  sampleContainer.style.display = "flex";
+  sampleContainer.style.gap = "0.5rem";
+  sampleContainer.style.marginBottom = "1rem";
+  
+  const ifcSelect = document.createElement("select");
+  ifcSelect.style.flex = "1";
+  const ifcFiles = [
+    { value: "/IFC/01.ifc", label: "01.ifc" },
+    { value: "/IFC/02.ifc", label: "02.ifc" },
+    { value: "/IFC/03.ifc", label: "03.ifc" },
+    { value: "/IFC/04.ifc", label: "04.ifc" },
+    { value: "/IFC/05.ifc", label: "05.ifc" }
+  ];
+  ifcFiles.forEach(file => {
+    const option = document.createElement("option");
+    option.value = file.value;
+    option.textContent = file.label;
+    ifcSelect.appendChild(option);
+  });
+  
   const sampleButton = document.createElement("button");
-  sampleButton.textContent = "샘플 IFC 불러오기";
+  sampleButton.textContent = "Load";
+  
+  sampleContainer.append(ifcSelect, sampleButton);
 
   const fileLabel = document.createElement("label");
   fileLabel.textContent = "직접 IFC 파일 선택";
@@ -420,7 +449,7 @@ function buildUi(root: HTMLElement): UiController {
   fileInput.accept = ".ifc";
   fileLabel.append(fileInput);
 
-  modelsSection.append(modelsSectionTitle, sampleButton, fileLabel);
+  modelsSection.append(modelsSectionTitle, sampleContainer, fileLabel);
 
   const fragmentSection = document.createElement("section");
   const fragmentTitle = document.createElement("h3");
@@ -573,8 +602,10 @@ function buildUi(root: HTMLElement): UiController {
       progress.hidden = false;
       progress.value = clamp(value);
     },
-    onSample(handler: () => void) {
-      sampleButton.addEventListener("click", handler);
+    onSample(handler: (selectedFile: string) => void) {
+      sampleButton.addEventListener("click", () => {
+        handler(ifcSelect.value);
+      });
     },
     onFile(handler: (file: File) => void | Promise<void>) {
       fileInput.addEventListener("change", async () => {
