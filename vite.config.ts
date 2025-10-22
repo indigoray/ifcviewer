@@ -4,6 +4,10 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     port: 8001,
-    strictPort: true
+    strictPort: true,
+    allowedHosts: [
+      'changsoftwork.iptime.org',
+      '.iptime.org'
+    ]
   }
 });
