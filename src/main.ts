@@ -160,21 +160,50 @@ async function bootstrap() {
   spatialTree.preserveStructureOnFilter = true;
   spatialTree.expanded = false;  // 루트만 펼친 뒤 스크립트로 IFCBUILDINGSTOREY까지 확장
 
+  // spatialTree 객체의 속성과 메서드들을 확인
+  console.log("[DEBUG] spatialTree object:", spatialTree);
+  console.log("[DEBUG] spatialTree methods:", Object.getOwnPropertyNames(Object.getPrototypeOf(spatialTree)));
+  console.log("[DEBUG] spatialTree properties:", Object.keys(spatialTree));
+
+  // storey 확장 관련 메서드가 있는지 확인
+  const prototype = Object.getPrototypeOf(spatialTree);
+  const allMethods = [];
+  let current = prototype;
+  while (current && current !== Object.prototype) {
+    allMethods.push(...Object.getOwnPropertyNames(current));
+    current = Object.getPrototypeOf(current);
+  }
+  console.log("[DEBUG] All spatialTree methods in prototype chain:", allMethods.filter(m => m.includes('expand') || m.includes('storey') || m.includes('level')));
+
+  // expandToStoreys 같은 메서드가 있는지 직접 확인
+  if (typeof (spatialTree as any).expandToStoreys === 'function') {
+    console.log("[DEBUG] Found expandToStoreys method! Using built-in function.");
+  } else {
+    console.log("[DEBUG] No expandToStoreys method found, using custom implementation.");
+  }
+
   ui.updateSpatialTreeTab(spatialTree as unknown as HTMLElement);
   ui.registerSpatialTreeExpand(() => {
+    // spatialTree를 직접 전달
     void expandToStoreyLevel(spatialTree as unknown as HTMLElement);
   });
 
   // 모델 로드 시 SpatialTree 업데이트
-  const scheduleSpatialExpansion = () => {
-    void expandToStoreyLevel(spatialTree as unknown as HTMLElement);
-  };
-
-  fragments.list.onItemSet.add(() => {
+  fragments.list.onItemSet.add(async () => {
     console.log("Model loaded, updating spatial tree");
     const allModels = Array.from(fragments.list.values());
-    updateSpatialTree({ models: allModels });
-    scheduleSpatialExpansion();
+    // updateSpatialTree({ models: allModels }); // 함수가 scope에 없음 - 주석 처리
+
+    // 디버깅용으로만 데이터 구조 확인 (로그 최소화)
+    await delay(1000);
+    await analyzeSpatialTreeData(spatialTree as unknown as HTMLElement);
+
+    // 모델 로드 시 자동 확장 제거
+    // if (spatialTree && typeof spatialTree === 'object') {
+    //   if ('expanded' in spatialTree) {
+    //     (spatialTree as any).expanded = true;
+    //   }
+    // }
   });
 
   const toolbar = buildToolbar({
@@ -488,8 +517,16 @@ function buildUi(root: HTMLElement): UiController {
   });
 
   expandStoreyButton.addEventListener("click", () => {
+    console.log("[DEBUG] Expand to Storey clicked");
     if (!spatialTreeElement) return;
-    void expandToStoreyLevel(spatialTreeElement);
+
+    // 중복 호출 방지
+    if (expandStoreyButton.disabled) return;
+    expandStoreyButton.disabled = true;
+
+    void expandToStoreyLevel(spatialTreeElement).finally(() => {
+      expandStoreyButton.disabled = false;
+    });
   });
 
   collapseAllButton.addEventListener("click", () => {
@@ -510,11 +547,12 @@ function buildUi(root: HTMLElement): UiController {
         contentTab.classList.add("active");
       }
 
-      if (targetTab === "spatial-tree") {
-        window.requestAnimationFrame(() => {
-          spatialTreeExpandHandler?.();
-        });
-      }
+      // spatial tree 탭 전환 시 자동 확장 제거
+      // if (targetTab === "spatial-tree") {
+      //   window.requestAnimationFrame(() => {
+      //     spatialTreeExpandHandler?.();
+      //   });
+      // }
     });
   });
 
@@ -684,7 +722,8 @@ function buildToolbar(context: ToolbarContext): ToolbarUpdater {
 
   const clearSelectionBtn = document.createElement("button");
   clearSelectionBtn.className = "toolbar-button";
-  clearSelectionBtn.textContent = "선택 초기화";
+  clearSelectionBtn.title = "선택 초기화";
+  clearSelectionBtn.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M5 5h14v2H5V5zm2 4h10l-1.5 11h-7L7 9zm4-6a1 1 0 0 1 1 1v1h-2V4a1 1 0 0 1 1-1z"/></svg>`;
   clearSelectionBtn.addEventListener("click", async () => {
     await highlighter.clear("select");
     ui.setStatus("선택을 초기화했습니다.");
@@ -693,7 +732,8 @@ function buildToolbar(context: ToolbarContext): ToolbarUpdater {
 
   const isolateBtn = document.createElement("button");
   isolateBtn.className = "toolbar-button";
-  isolateBtn.textContent = "선택 격리";
+  isolateBtn.title = "선택 격리";
+  isolateBtn.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M4 4h16v4h-2V6H6v12h12v-2h2v4H4V4zm8 3a5 5 0 1 1 0 10 5 5 0 0 1 0-10zm0 2.5A2.5 2.5 0 1 0 12 15a2.5 2.5 0 0 0 0-5z"/></svg>`;
   isolateBtn.addEventListener("click", async () => {
     const selection = highlighter.selection.select;
     if (isSelectionEmpty(selection)) {
@@ -707,7 +747,8 @@ function buildToolbar(context: ToolbarContext): ToolbarUpdater {
 
   const resetVisibilityBtn = document.createElement("button");
   resetVisibilityBtn.className = "toolbar-button";
-  resetVisibilityBtn.textContent = "전체 표시";
+  resetVisibilityBtn.title = "전체 표시";
+  resetVisibilityBtn.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6zm9 4a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm0-6.5A2.5 2.5 0 1 1 12 15a2.5 2.5 0 0 1 0-5z"/></svg>`;
   resetVisibilityBtn.addEventListener("click", async () => {
     await hider.set(true);
     ui.setStatus("모델 전체를 다시 표시했습니다.");
@@ -716,7 +757,8 @@ function buildToolbar(context: ToolbarContext): ToolbarUpdater {
 
   const hoverBtn = document.createElement("button");
   hoverBtn.className = "toolbar-button";
-  hoverBtn.textContent = "호버 강조";
+  hoverBtn.title = "호버 강조";
+  hoverBtn.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 2l2.09 6.26H20l-5.17 3.76L16.18 18 12 14.27 7.82 18 9.17 12.02 4 8.26h5.91L12 2z"/></svg>`;
   hoverBtn.classList.toggle("active", hoverer.enabled);
   hoverBtn.addEventListener("click", () => {
     hoverer.enabled = !hoverer.enabled;
@@ -729,7 +771,8 @@ function buildToolbar(context: ToolbarContext): ToolbarUpdater {
 
   const postBtn = document.createElement("button");
   postBtn.className = "toolbar-button";
-  postBtn.textContent = "후처리";
+  postBtn.title = "후처리";
+  postBtn.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 3a9 9 0 0 1 9 9h-2a7 7 0 1 0-7 7v-3l5 4-5 4v-3a9 9 0 0 1 0-18z"/></svg>`;
   postBtn.classList.toggle("active", postproduction.enabled);
   postBtn.addEventListener("click", () => {
     postproduction.enabled = !postproduction.enabled;
@@ -744,7 +787,8 @@ function buildToolbar(context: ToolbarContext): ToolbarUpdater {
 
   const classifierBtn = document.createElement("button");
   classifierBtn.className = "toolbar-button";
-  classifierBtn.textContent = "분류 보기";
+  classifierBtn.title = "분류 보기";
+  classifierBtn.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M4 5h16v2H4V5zm0 6h10v2H4v-2zm0 6h16v2H4v-2z"/></svg>`;
   classifierBtn.addEventListener("click", () => {
     toggleMenu("classifier", "분류 그룹", "모델을 불러오면 자동으로 그룹이 준비됩니다.", classifierItems);
   });
@@ -752,7 +796,8 @@ function buildToolbar(context: ToolbarContext): ToolbarUpdater {
 
   const finderBtn = document.createElement("button");
   finderBtn.className = "toolbar-button";
-  finderBtn.textContent = "빠른 찾기";
+  finderBtn.title = "빠른 찾기";
+  finderBtn.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M11 4a7 7 0 1 1 0 14 7 7 0 0 1 0-14zm0 2a5 5 0 1 0 0 10 5 5 0 0 0 0-10zm5.707 10.293L20.414 20l-1.414 1.414-3.707-3.707 1.414-1.414z"/></svg>`;
   finderBtn.addEventListener("click", () => {
     toggleMenu("finder", "즐겨찾는 검색", "모델을 불러오면 사용할 수 있습니다.", finderItems);
   });
@@ -760,6 +805,8 @@ function buildToolbar(context: ToolbarContext): ToolbarUpdater {
 
   const projectionBtn = document.createElement("button");
   projectionBtn.className = "toolbar-button";
+  projectionBtn.title = "투영 전환";
+  projectionBtn.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M4 6h16v2H4V6zm0 5h10v2H4v-2zm0 5h16v2H4v-2z"/></svg>`;
   projectionBtn.addEventListener("click", () => {
     const projection = world.camera.projection.current;
     const next = projection === "Perspective" ? "Orthographic" : "Perspective";
@@ -775,19 +822,21 @@ function buildToolbar(context: ToolbarContext): ToolbarUpdater {
 
   const cameraModeBtn = document.createElement("button");
   cameraModeBtn.className = "toolbar-button";
-  cameraModeBtn.textContent = "카메라 모드: Orbit";
+  cameraModeBtn.title = "카메라 모드: Orbit";
+  cameraModeBtn.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 4a8 8 0 1 1-6.32 12.9l-1.6.8A10 10 0 1 0 12 2v2zm0 3a5 5 0 1 1 0 10 5 5 0 0 1 0-10z"/></svg>`;
   cameraModeBtn.addEventListener("click", () => {
     const current = world.camera.mode.id;
     const next = current === "Orbit" ? "Plan" : "Orbit";
     world.camera.set(next);
-    cameraModeBtn.textContent = `카메라 모드: ${next}`;
+    cameraModeBtn.title = `카메라 모드: ${next}`;
     ui.setStatus(`${next} 모드로 전환했습니다.`);
   });
   toolbar.append(cameraModeBtn);
 
   const viewsBtn = document.createElement("button");
   viewsBtn.className = "toolbar-button";
-  viewsBtn.textContent = "뷰 전환";
+  viewsBtn.title = "뷰 전환";
+  viewsBtn.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M4 5h6v6H4V5zm10 0h6v6h-6V5zM4 13h6v6H4v-6zm10 0h6v6h-6v-6z"/></svg>`;
   viewsBtn.addEventListener("click", () => {
     toggleMenu("views", "저장된 뷰", "모델을 불러와 2D 뷰를 생성하면 나타납니다.", viewItems);
   });
@@ -795,7 +844,8 @@ function buildToolbar(context: ToolbarContext): ToolbarUpdater {
 
   const closeViewBtn = document.createElement("button");
   closeViewBtn.className = "toolbar-button";
-  closeViewBtn.textContent = "뷰 닫기";
+  closeViewBtn.title = "뷰 닫기";
+  closeViewBtn.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M6.225 4.811 7.64 3.397 12 7.757l4.36-4.36 1.414 1.414L13.414 9.17l4.36 4.36-1.414 1.414L12 10.586l-4.36 4.36-1.414-1.414 4.36-4.36-4.36-4.36z"/></svg>`;
   closeViewBtn.addEventListener("click", () => {
     views.close();
     ui.setStatus("활성 뷰를 닫았습니다.");
@@ -1121,21 +1171,211 @@ function getPostproduction(world: ViewerWorld) {
   return post;
 }
 
-async function expandToStoreyLevel(tableElement: HTMLElement) {
+async function analyzeSpatialTreeData(tableElement: HTMLElement) {
   const table = findTableElement(tableElement);
   if (!table) return;
 
-  table.expanded = false;
-  await waitForElementUpdate(table);
-
+  // 루트 그룹들을 찾기
   const roots = await waitForRootGroups(table);
-  await expandGroupsRecursive(roots, 1, MAX_AUTO_EXPANSION_DEPTH);
+
+  // 분석은 하지만 로그는 최소화
+  if (roots.length > 0) {
+    console.log(`[DEBUG] Spatial tree has ${roots.length} root groups`);
+  }
 }
 
-function findTableElement(element: HTMLElement): HTMLElement | null {
-  if (element.tagName.toLowerCase() === "bim-table") return element;
-  const nested = element.querySelector("bim-table");
-  return nested ? (nested as HTMLElement) : null;
+// Removed: analyzeGroupsRecursive - not needed for production
+
+async function expandToStoreyLevel(tableElement: HTMLElement) {
+  console.log("[DEBUG] Expanding to storey level...");
+  
+  // tableElement가 이미 bim-table인지 확인
+  let table: any = tableElement;
+  if (tableElement.tagName?.toLowerCase() !== 'bim-table') {
+    table = findTableElement(tableElement);
+    if (!table) {
+      console.log("[DEBUG] No table found");
+      return;
+    }
+  }
+
+  const tableComponent = table as any;
+  
+  // 먼저 전체 펼침 (expanded = true)
+  tableComponent.expanded = true;
+  await waitForElementUpdate(table);
+  await new Promise(resolve => setTimeout(resolve, 500)); // DOM이 완전히 렌더링되도록 대기
+  
+  // Shadow DOM에서 STOREY 레벨까지만 표시
+  if (table.shadowRoot) {
+    const tableChildren = table.shadowRoot.querySelector('bim-table-children');
+    
+    if (tableChildren) {
+      // bim-table-children 안의 모든 bim-table-group 찾기 (재귀적으로)
+      function findAllGroups(root: Element | ShadowRoot): HTMLElement[] {
+        const groups: HTMLElement[] = [];
+        const directGroups = root.querySelectorAll('bim-table-group');
+        groups.push(...Array.from(directGroups) as HTMLElement[]);
+        
+        const allElements = root.querySelectorAll('*');
+        for (const el of allElements) {
+          const shadow = (el as any).shadowRoot;
+          if (shadow) {
+            groups.push(...findAllGroups(shadow));
+          }
+        }
+        return groups;
+      }
+      
+      // 모든 그룹 찾기
+      let allGroups: HTMLElement[] = [];
+      allGroups.push(...findAllGroups(tableChildren));
+      
+      const childrenShadow = (tableChildren as any).shadowRoot;
+      if (childrenShadow) {
+        allGroups.push(...findAllGroups(childrenShadow));
+      }
+      
+      // STOREY 타입 그룹을 찾고, 그 자식들(실제 storey 인스턴스들)의 자식들을 접기
+      for (let i = 0; i < allGroups.length; i++) {
+        const groupElement = allGroups[i] as any;
+        const data = groupElement.data;
+        
+        if (data) {
+          const name = data.Name || data.name || data.data?.Name || data.data?.name || '';
+          
+          // IFCBUILDINGSTOREY 타입 그룹을 찾음
+          if (name === 'IFCBUILDINGSTOREY') {
+            // 다음 그룹들(실제 storey 인스턴스들)의 자식을 접기
+            for (let j = i + 1; j < allGroups.length; j++) {
+              const nextGroup = allGroups[j] as any;
+              const nextData = nextGroup.data;
+              
+              if (nextData) {
+                const nextName = nextData.Name || nextData.name || nextData.data?.Name || nextData.data?.name || '';
+                
+                // 다음 IFC 타입을 만나면 중단
+                if (nextName.startsWith('IFC')) {
+                  break;
+                }
+                
+                // storey 인스턴스의 자식들을 접기
+                if (typeof nextGroup.toggleChildren === 'function') {
+                  nextGroup.toggleChildren(false);
+                }
+              }
+            }
+            
+            break;
+          }
+        }
+      }
+    }
+  }
+}
+
+async function collapseAfterStorey(table: HTMLElement) {
+  const shadowRoot = table.shadowRoot;
+  if (!shadowRoot) return;
+  
+  // 모든 bim-table-group 요소 찾기
+  const allGroups = Array.from(shadowRoot.querySelectorAll('bim-table-group'));
+  console.log(`[DEBUG] Found ${allGroups.length} groups in shadow DOM`);
+  
+  let foundStorey = false;
+  
+  for (const group of allGroups) {
+    const groupElement = group as any;
+    const data = groupElement.data;
+    
+    if (data) {
+      const name = data.Name || data.name || '';
+      
+      if (name.includes('STOREY') || name.includes('BUILDINGSTOREY')) {
+        foundStorey = true;
+        console.log(`[DEBUG] Found STOREY: ${name}`);
+        
+        // STOREY의 자식들을 접기
+        if (typeof groupElement.toggleChildren === 'function') {
+          groupElement.toggleChildren(false);
+        }
+      }
+    }
+  }
+}
+
+async function expandToStoreyRecursive(groups: HTMLElement[], depth = 0, maxDepth = 2) {
+  for (const group of groups) {
+    // 최대 깊이에 도달하면 멈춤 (storey 레벨까지만)
+    if (depth >= maxDepth) {
+      if (hasExpandableChildren(group)) {
+        await ensureGroupOpened(group);
+      }
+      continue;
+    }
+
+    // 현재 그룹 확장
+    if (hasExpandableChildren(group)) {
+      await ensureGroupOpened(group);
+      const children = await waitForChildGroups(group);
+      if (children.length > 0) {
+        await expandToStoreyRecursive(children, depth + 1, maxDepth);
+      }
+    }
+  }
+}
+
+function isStoreyGroup(data: any): boolean {
+  if (!data || typeof data !== 'object') return false;
+
+  // IFCBUILDINGSTOREY 타입 확인
+  const type = data.type || data.ifcType || data.Type;
+  if (type && typeof type === 'string') {
+    return type.toUpperCase().includes('IFCBUILDINGSTOREY') ||
+           type.toUpperCase().includes('BUILDINGSTOREY');
+  }
+
+  // 이름으로도 확인 (fallback)
+  const name = data.name || data.Name;
+  if (name && typeof name === 'string') {
+    const upperName = name.toUpperCase();
+    return upperName.includes('STOREY') ||
+           upperName.includes('STORY') ||
+           upperName.includes('FLOOR');
+  }
+
+  return false;
+}
+
+function findTableElement(element: any): HTMLElement | null {
+  console.log("[DEBUG] findTableElement called with:", element);
+
+  // element가 HTMLElement이고 bim-table인 경우
+  if (element && typeof element === 'object' && 'tagName' in element && element.tagName?.toLowerCase() === "bim-table") {
+    console.log("[DEBUG] Element is already a bim-table");
+    return element as HTMLElement;
+  }
+
+  // element가 HTMLElement인 경우 자식에서 bim-table 찾기
+  if (element && typeof element === 'object' && 'querySelector' in element) {
+    const nested = (element as HTMLElement).querySelector("bim-table");
+    if (nested) {
+      console.log("[DEBUG] Found nested bim-table");
+      return nested as HTMLElement;
+    }
+  }
+
+  // element 자체가 bim-table 컴포넌트인 경우 (shadow DOM 등)
+  if (element && typeof element === 'object' && 'shadowRoot' in element) {
+    console.log("[DEBUG] Element has shadowRoot, looking for bim-table in shadow");
+    const shadowTable = (element as any).shadowRoot?.querySelector("bim-table");
+    if (shadowTable) {
+      return shadowTable as HTMLElement;
+    }
+  }
+
+  console.log("[DEBUG] No bim-table found");
+  return null;
 }
 
 async function waitForRootGroups(table: HTMLElement) {
@@ -1149,9 +1389,20 @@ async function waitForRootGroups(table: HTMLElement) {
 }
 
 function collectRootGroups(table: HTMLElement): HTMLElement[] {
+  const tableElement = table as any;
+
+  // shadow root에서 그룹 찾기
   const root = table.shadowRoot;
-  if (!root) return [];
-  return Array.from(root.querySelectorAll("bim-table-group")) as HTMLElement[];
+  if (root) {
+    const shadowGroups = Array.from(root.querySelectorAll("bim-table-group")) as HTMLElement[];
+    if (shadowGroups.length > 0) {
+      console.log(`[DEBUG] Found ${shadowGroups.length} bim-table-group elements in shadow root`);
+      return shadowGroups;
+    }
+  }
+
+  console.log("[DEBUG] No bim-table-group elements found in shadow root");
+  return [];
 }
 
 function collectChildGroups(group: HTMLElement): HTMLElement[] {
@@ -1259,17 +1510,37 @@ async function waitForChildGroups(group: HTMLElement) {
 }
 
 async function expandAllInSpatialTree(tableElement: HTMLElement) {
+  console.log("[DEBUG] Expand All clicked");
   const table = findTableElement(tableElement);
-  if (!table) return;
-  table.expanded = true;
+  if (!table) {
+    console.log("[DEBUG] No table found for expand all");
+    return;
+  }
+  
+  // 먼저 모두 접기
+  console.log("[DEBUG] Collapsing all first");
+  (table as any).expanded = false;
   await waitForElementUpdate(table);
+  await new Promise(resolve => setTimeout(resolve, 100));
+  
+  // 다시 모두 펼치기
+  console.log("[DEBUG] Setting table.expanded = true");
+  (table as any).expanded = true;
+  await waitForElementUpdate(table);
+  console.log("[DEBUG] Expand all completed");
 }
 
 async function collapseAllInSpatialTree(tableElement: HTMLElement) {
+  console.log("[DEBUG] Collapse All clicked");
   const table = findTableElement(tableElement);
-  if (!table) return;
-  table.expanded = false;
+  if (!table) {
+    console.log("[DEBUG] No table found for collapse all");
+    return;
+  }
+  console.log("[DEBUG] Setting table.expanded = false");
+  (table as any).expanded = false;
   await waitForElementUpdate(table);
+  console.log("[DEBUG] Collapse all completed");
 }
 
 function hasExpandableChildren(group: HTMLElement): boolean {
