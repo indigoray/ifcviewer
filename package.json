@@ -1,0 +1,26 @@
+{
+  "name": "ifc-viewer",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@thatopen/components": "^3.1.6",
+    "@thatopen/fragments": "^3.1.0",
+    "@thatopen/ui": "^3.1.0",
+    "stats.js": "^0.17.0",
+    "three": "^0.175.0",
+    "web-ifc": "0.0.71"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.17",
+    "@types/stats.js": "^0.17.3",
+    "@types/three": "^0.175.0",
+    "typescript": "^5.4.5",
+    "vite": "^5.1.6"
+  }
+}
