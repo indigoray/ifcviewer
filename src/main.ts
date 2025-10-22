@@ -53,6 +53,7 @@ type ToolbarContext = {
   hider: OBC.Hider;
   finder: OBC.ItemsFinder;
   views: OBC.Views;
+  grid: OBC.SimpleGrid;
 };
 
 const SAMPLE_IFC_URL =
@@ -114,6 +115,8 @@ async function bootstrap() {
   });
 
   const postproduction = getPostproduction(world);
+  const gridsComponent = components.get(OBC.Grids);
+  const grid = gridsComponent.create(world);
   const views = components.get(OBC.Views);
   views.world = world;
 
@@ -212,6 +215,7 @@ async function bootstrap() {
     hoverer,
     highlighter,
     postproduction,
+    grid,
     hider,
     finder,
     views
@@ -331,7 +335,6 @@ async function setupWorld(
   await world.camera.controls.setLookAt(60, 35, 60, 0, 0, 0);
 
   components.init();
-  components.get(OBC.Grids).create(world);
 
   const stats = new Stats();
   stats.showPanel(0);
@@ -653,7 +656,7 @@ function buildUi(root: HTMLElement): UiController {
 }
 
 function buildToolbar(context: ToolbarContext): ToolbarUpdater {
-  const { world, ui, hoverer, highlighter, postproduction, hider, finder, views } =
+  const { world, ui, hoverer, highlighter, postproduction, hider, finder, views, grid } =
     context;
 
   const toolbar = document.createElement("div");
@@ -821,6 +824,21 @@ function buildToolbar(context: ToolbarContext): ToolbarUpdater {
     );
   });
   toolbar.append(postBtn);
+
+  const gridBtn = document.createElement("button");
+  gridBtn.className = "toolbar-button";
+  const updateGridButtonState = () => {
+    gridBtn.classList.toggle("active", grid.visible);
+    gridBtn.title = grid.visible ? "그리드 숨기기" : "그리드 표시";
+  };
+  gridBtn.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M4 5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5zm2 1v12h12V6H6zm3 0h2v12H9V6zm6 0h2v12h-2V6zM6 11h12v2H6v-2z"/></svg>`;
+  updateGridButtonState();
+  gridBtn.addEventListener("click", () => {
+    grid.visible = !grid.visible;
+    updateGridButtonState();
+    ui.setStatus(grid.visible ? "그리드를 표시합니다." : "그리드를 숨겼습니다.");
+  });
+  toolbar.append(gridBtn);
 
   const classifierBtn = document.createElement("button");
   classifierBtn.className = "toolbar-button";
