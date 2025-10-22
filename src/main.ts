@@ -1165,7 +1165,7 @@ function escapeRegExp(value: string) {
 
 function getPostproduction(world: ViewerWorld) {
   const post = world.renderer.postproduction;
-  post.enabled = true;
+  post.enabled = false;
   post.outlinesEnabled = true;
   post.style = PostproductionAspect.COLOR_SHADOWS;
   return post;
