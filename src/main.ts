@@ -777,6 +777,12 @@ function buildToolbar(context: ToolbarContext): ToolbarUpdater {
   postBtn.addEventListener("click", () => {
     postproduction.enabled = !postproduction.enabled;
     postBtn.classList.toggle("active", postproduction.enabled);
+    console.log("[DEBUG] Postproduction enabled:", postproduction.enabled);
+    console.log("[DEBUG] Postproduction state:", {
+      enabled: postproduction.enabled,
+      outlinesEnabled: postproduction.outlinesEnabled,
+      style: postproduction.style
+    });
     ui.setStatus(
       postproduction.enabled
         ? "후처리 효과를 활성화했습니다."
@@ -1165,7 +1171,7 @@ function escapeRegExp(value: string) {
 
 function getPostproduction(world: ViewerWorld) {
   const post = world.renderer.postproduction;
-  post.enabled = false;
+  post.enabled = true;
   post.outlinesEnabled = true;
   post.style = PostproductionAspect.COLOR_SHADOWS;
   return post;
