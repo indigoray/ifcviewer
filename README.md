@@ -17,6 +17,10 @@ npm run dev
 - IFC 로딩 과정은 공식 예제와 동일하게 `FragmentsManager`를 초기화한 뒤 `IfcLoader`의 `load` 메서드로 처리하며, 진행률은 `processData.progressCallback`을 통해 표시합니다.
 - 프래그먼트 워커는 문서에서 안내한 경로(`https://thatopen.github.io/engine_fragment/resources/worker.mjs`)에서 가져와 Object URL로 생성합니다.
 - 성능 모니터링을 위해 `stats.js`를 추가했고, 카메라 휴식 이벤트마다 프래그먼트를 갱신해 장면 상태가 최신으로 유지되도록 했습니다.
+- 렌더러는 `@thatopen/components-front`의 `PostproductionRenderer`로 교체해 후처리 효과를 기본 활성화했고, 하단 툴바에서 토글할 수 있도록 했습니다.
+- 툴바에는 하이라이터(`Highlighter`), 호버 강조(`Hoverer`), 가시성 관리(`Hider`), 분류(`Classifier`), 빠른 검색(`ItemsFinder`), 카메라 투영과 모드 제어(`OrthoPerspectiveCamera`), 2D 뷰 전환(`Views`)을 연결했습니다.
+- 분류와 검색 메뉴는 모델을 로드하면 자동으로 채워지며, 선택된 결과는 `Hider.isolate`를 이용해 즉시 격리됩니다.
+- `@thatopen/ui-obc`의 `bim-view-cube`를 상단에 배치해 언제든지 카메라를 정방향으로 맞출 수 있도록 했으며, [ViewCube 튜토리얼](https://docs.thatopen.com/Tutorials/UserInterface/OBC/ViewCube)의 패턴을 따라 이벤트를 등록했습니다.
 
 ## 참고 문서
 

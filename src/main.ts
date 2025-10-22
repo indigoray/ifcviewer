@@ -1,16 +1,66 @@
 import "./style.css";
 
 import Stats from "stats.js";
+import * as THREE from "three";
+import * as BUI from "@thatopen/ui";
 import * as OBC from "@thatopen/components";
+import * as OBF from "@thatopen/components-front";
+import * as CUI from "@thatopen/ui-obc";
+import { PostproductionAspect } from "@thatopen/components-front";
 
 type ViewerWorld = OBC.World<
   OBC.SimpleScene,
   OBC.OrthoPerspectiveCamera,
-  OBC.SimpleRenderer
+  OBF.PostproductionRenderer
 >;
+
+type ViewCubeElement = HTMLElement & {
+  camera: THREE.Camera;
+  updateOrientation: () => void;
+};
+
+type UiController = {
+  setBusy(active: boolean): void;
+  setStatus(message: string): void;
+  setProgress(value: number | null): void;
+  onSample(handler: () => void): void;
+  onFile(handler: (file: File) => void | Promise<void>): void;
+  updateModelsTab(elements: { modelsList: HTMLElement; loadBtn: HTMLElement }): void;
+  updatePropertiesTab(propertiesTable: HTMLElement): void;
+  updateSpatialTreeTab(spatialTree: HTMLElement): void;
+  registerSpatialTreeExpand(handler: () => void): void;
+};
+
+type ToolbarMenuItem = {
+  label: string;
+  hint?: string;
+  action: () => Promise<void> | void;
+};
+
+type ToolbarUpdater = {
+  updateClassifier(items: ToolbarMenuItem[]): void;
+  updateFinder(items: ToolbarMenuItem[]): void;
+  updateViews(items: ToolbarMenuItem[]): void;
+  refreshProjectionLabel(): void;
+};
+
+type ToolbarContext = {
+  world: ViewerWorld;
+  ui: UiController;
+  hoverer: OBF.Hoverer;
+  highlighter: OBF.Highlighter;
+  postproduction: ReturnType<typeof getPostproduction>;
+  hider: OBC.Hider;
+  finder: OBC.ItemsFinder;
+  views: OBC.Views;
+};
 
 const SAMPLE_IFC_URL =
   "https://thatopen.github.io/engine_components/resources/ifc/school_str.ifc";
+
+const processedModels = new Set<string>();
+const classifierSelections = new Map<string, OBC.ModelIdMap>();
+const finderQueryRegistry = new Map<string, string>();
 
 void bootstrap().catch((error) => {
   console.error("Failed to start viewer", error);
@@ -24,9 +74,12 @@ async function bootstrap() {
     throw new Error("Viewer container not found");
   }
 
+  BUI.Manager.init();
+  CUI.Manager.init();
+
   const components = new OBC.Components();
   const world = await setupWorld(components, viewerRoot);
-
+  setupViewCube(world, viewerRoot);
   const fragments = components.get(OBC.FragmentsManager);
   const workerUrl = await prepareFragments(world, fragments);
 
@@ -39,15 +92,144 @@ async function bootstrap() {
     }
   });
 
+  const highlighter = components.get(OBF.Highlighter);
+  await highlighter.setup({
+    world,
+    selectMaterialDefinition: {
+      color: new THREE.Color("#37b26c"),
+      opacity: 0.85,
+      transparent: false,
+      renderedFaces: 0
+    }
+  });
+
+  const hoverer = components.get(OBF.Hoverer);
+  hoverer.world = world;
+  hoverer.enabled = true;
+  hoverer.material = new THREE.MeshBasicMaterial({
+    color: 0x4a90e2,
+    transparent: true,
+    opacity: 0.35,
+    depthTest: false
+  });
+
+  const postproduction = getPostproduction(world);
+  const views = components.get(OBC.Views);
+  views.world = world;
+
+  const classifier = components.get(OBC.Classifier);
+  const hider = components.get(OBC.Hider);
+  const finder = components.get(OBC.ItemsFinder);
+  const raycasters = components.get(OBC.Raycasters);
+  raycasters.get(world);
+
   const ui = buildUi(uiRoot);
   ui.setStatus("모델을 선택하거나 샘플을 불러와 주세요.");
 
+  // ModelsList 컴포넌트 초기화
+  const [modelsList] = CUI.tables.modelsList({
+    components,
+    actions: { download: true, dispose: true }
+  });
+
+  const [loadFragBtn] = CUI.buttons.loadFrag({ components });
+
+  ui.updateModelsTab({
+    modelsList: modelsList as unknown as HTMLElement,
+    loadBtn: loadFragBtn as unknown as HTMLElement
+  });
+
+  // ItemsData (Properties) 컴포넌트 초기화
+  const [propertiesTable, updatePropertiesTable] = CUI.tables.itemsData({
+    components,
+    modelIdMap: {}
+  });
+
+  propertiesTable.preserveStructureOnFilter = true;
+  propertiesTable.indentationInText = false;
+  propertiesTable.expanded = true;  // 기본적으로 1단계 확장
+
+  ui.updatePropertiesTab(propertiesTable as unknown as HTMLElement);
+
+  // SpatialTree 컴포넌트 초기화
+  const [spatialTree, updateSpatialTree] = CUI.tables.spatialTree({
+    components,
+    models: []
+  });
+
+  spatialTree.preserveStructureOnFilter = true;
+  spatialTree.expanded = false;  // 루트만 펼친 뒤 스크립트로 IFCBUILDINGSTOREY까지 확장
+
+  ui.updateSpatialTreeTab(spatialTree as unknown as HTMLElement);
+  ui.registerSpatialTreeExpand(() => {
+    void expandToStoreyLevel(spatialTree as unknown as HTMLElement);
+  });
+
+  // 모델 로드 시 SpatialTree 업데이트
+  const scheduleSpatialExpansion = () => {
+    void expandToStoreyLevel(spatialTree as unknown as HTMLElement);
+  };
+
+  fragments.list.onItemSet.add(() => {
+    console.log("Model loaded, updating spatial tree");
+    const allModels = Array.from(fragments.list.values());
+    updateSpatialTree({ models: allModels });
+    scheduleSpatialExpansion();
+  });
+
+  const toolbar = buildToolbar({
+    world,
+    ui,
+    hoverer,
+    highlighter,
+    postproduction,
+    hider,
+    finder,
+    views
+  });
+
+  // 선택 변경 시 속성 테이블 업데이트 및 상태 업데이트
+  highlighter.events.select.onHighlight.add((modelIdMap) => {
+    const count = countSelection(modelIdMap);
+    if (count > 0) {
+      ui.setStatus(`선택된 요소 ${count.toLocaleString("ko-KR")}개`);
+    }
+
+    // Properties 탭 업데이트 - updatePropertiesTable 함수 사용
+    updatePropertiesTable({ modelIdMap });
+  });
+
+  highlighter.events.select.onClear.add(() => {
+    ui.setStatus("선택이 비어 있습니다.");
+
+    // Properties 탭 초기화
+    updatePropertiesTable({ modelIdMap: {} });
+  });
+
+  ui.onSample(() =>
+    queue(async () => {
+      ui.setStatus("샘플 IFC 파일을 다운로드 중입니다.");
+      const buffer = await fetchIfc(SAMPLE_IFC_URL);
+      await loadIfcBuffer(buffer, "샘플 모델");
+    })
+  );
+
+  ui.onFile((file) =>
+    queue(async () => {
+      ui.setStatus(`"${file.name}" 변환을 시작합니다.`);
+      const buffer = await readFile(file);
+      await loadIfcBuffer(buffer, file.name);
+    })
+  );
+
+  window.addEventListener("beforeunload", () => {
+    URL.revokeObjectURL(workerUrl);
+  });
+
   let busy = false;
 
-  const queue = async (task: () => Promise<void>) => {
-    if (busy) {
-      return;
-    }
+  async function queue(task: () => Promise<void>) {
+    if (busy) return;
     busy = true;
     ui.setBusy(true);
     try {
@@ -60,27 +242,7 @@ async function bootstrap() {
       ui.setBusy(false);
       ui.setProgress(null);
     }
-  };
-
-  ui.onSample(() =>
-    queue(async () => {
-      ui.setStatus("샘플 IFC 파일을 다운로드 중입니다.");
-      const buffer = await fetchIfc(SAMPLE_IFC_URL);
-      await loadIfcBuffer(buffer, "샘플 모델");
-    })
-  );
-
-  ui.onFile((file) =>
-    queue(async () => {
-      ui.setStatus(`"${file.name}" 파일을 변환 중입니다.`);
-      const buffer = await readFile(file);
-      await loadIfcBuffer(buffer, file.name);
-    })
-  );
-
-  window.addEventListener("beforeunload", () => {
-    URL.revokeObjectURL(workerUrl);
-  });
+  }
 
   async function loadIfcBuffer(buffer: Uint8Array, label: string) {
     ui.setProgress(0);
@@ -90,9 +252,7 @@ async function bootstrap() {
           const ratio = extractProgress(state);
           if (ratio !== undefined) {
             ui.setProgress(ratio);
-            ui.setStatus(
-              `${label} 변환 중... ${Math.round(ratio * 100)}%`
-            );
+            ui.setStatus(`${label} 변환 중... ${Math.round(ratio * 100)}%`);
           } else {
             ui.setStatus(`${label} 데이터를 준비 중입니다.`);
           }
@@ -100,11 +260,21 @@ async function bootstrap() {
       }
     });
 
-    model.useCamera(world.camera.three);
-    world.scene.three.add(model.object);
-    fragments.core.update(true);
+    ui.setProgress(null);
     ui.setStatus(`${label} 로딩이 완료되었습니다.`);
+    await registerModelTools({
+      model,
+      world,
+      toolbar,
+      views,
+      hider,
+      classifier,
+      finder,
+      ui
+    });
   }
+
+  toolbar.refreshProjectionLabel();
 }
 
 async function setupWorld(
@@ -115,14 +285,14 @@ async function setupWorld(
   const world = worlds.create<
     OBC.SimpleScene,
     OBC.OrthoPerspectiveCamera,
-    OBC.SimpleRenderer
+    OBF.PostproductionRenderer
   >();
 
   world.scene = new OBC.SimpleScene(components);
   world.scene.setup();
   world.scene.three.background = null;
 
-  world.renderer = new OBC.SimpleRenderer(components, container);
+  world.renderer = new OBF.PostproductionRenderer(components, container);
   world.camera = new OBC.OrthoPerspectiveCamera(components);
   await world.camera.controls.setLookAt(60, 35, 60, 0, 0, 0);
 
@@ -154,34 +324,61 @@ async function prepareFragments(
     fragments.core.update(true);
   });
 
+  world.onCameraChanged.add((camera) => {
+    for (const [, model] of fragments.list) {
+      model.useCamera(camera.three);
+    }
+    fragments.core.update(true);
+  });
+
+  fragments.list.onItemSet.add(({ value: model }) => {
+    model.useCamera(world.camera.three);
+    world.scene.three.add(model.object);
+    fragments.core.update(true);
+  });
+
   return workerUrl;
 }
 
-async function createFragmentWorker() {
-  const response = await fetch(
-    "https://thatopen.github.io/engine_fragment/resources/worker.mjs"
-  );
-  if (!response.ok) {
-    throw new Error("Failed to download fragment worker");
-  }
-  const blob = await response.blob();
-  const file = new File([blob], "worker.mjs", {
-    type: "text/javascript"
-  });
-  return URL.createObjectURL(file);
-}
-
-function buildUi(root: HTMLElement) {
+function buildUi(root: HTMLElement): UiController {
   root.innerHTML = "";
 
   const title = document.createElement("h1");
-  title.textContent = "Ifc Viewer 예시";
+  title.textContent = "Ifc Viewer";
 
-  const description = document.createElement("p");
-  description.textContent =
-    "That Open Components 구조를 따라 만든 기본 IFC 뷰어입니다.";
+  // 탭 헤더
+  const tabHeader = document.createElement("div");
+  tabHeader.className = "tab-header";
 
-  const actions = document.createElement("section");
+  const modelsTabBtn = document.createElement("button");
+  modelsTabBtn.className = "tab-button active";
+  modelsTabBtn.textContent = "Models";
+  modelsTabBtn.dataset.tab = "models";
+
+  const propertiesTabBtn = document.createElement("button");
+  propertiesTabBtn.className = "tab-button";
+  propertiesTabBtn.textContent = "Properties";
+  propertiesTabBtn.dataset.tab = "properties";
+
+  const spatialTreeTabBtn = document.createElement("button");
+  spatialTreeTabBtn.className = "tab-button";
+  spatialTreeTabBtn.textContent = "Spatial Tree";
+  spatialTreeTabBtn.dataset.tab = "spatial-tree";
+
+  tabHeader.append(modelsTabBtn, propertiesTabBtn, spatialTreeTabBtn);
+
+  // 탭 컨텐츠 컨테이너
+  const tabContents = document.createElement("div");
+  tabContents.className = "tab-contents";
+
+  // Models 탭
+  const modelsTab = document.createElement("div");
+  modelsTab.className = "tab-content active";
+  modelsTab.dataset.tab = "models";
+
+  const modelsSection = document.createElement("section");
+  const modelsSectionTitle = document.createElement("h3");
+  modelsSectionTitle.textContent = "모델 불러오기";
 
   const sampleButton = document.createElement("button");
   sampleButton.textContent = "샘플 IFC 불러오기";
@@ -194,9 +391,69 @@ function buildUi(root: HTMLElement) {
   fileInput.accept = ".ifc";
   fileLabel.append(fileInput);
 
-  actions.append(sampleButton, fileLabel);
+  modelsSection.append(modelsSectionTitle, sampleButton, fileLabel);
 
+  const fragmentSection = document.createElement("section");
+  const fragmentTitle = document.createElement("h3");
+  fragmentTitle.textContent = "Fragment 파일 불러오기";
+  fragmentSection.append(fragmentTitle);
+
+  const modelsListSection = document.createElement("section");
+  const modelsListTitle = document.createElement("h3");
+  modelsListTitle.textContent = "로딩된 모델";
+  modelsListSection.append(modelsListTitle);
+
+  modelsTab.append(modelsSection, fragmentSection, modelsListSection);
+
+  // Properties 탭
+  const propertiesTab = document.createElement("div");
+  propertiesTab.className = "tab-content";
+  propertiesTab.dataset.tab = "properties";
+
+  const propertiesSection = document.createElement("section");
+  const propertiesTitle = document.createElement("h3");
+  propertiesTitle.textContent = "요소 속성";
+  const propertiesMessage = document.createElement("p");
+  propertiesMessage.className = "empty-message";
+  propertiesMessage.textContent = "요소를 선택하면 속성이 표시됩니다.";
+  propertiesSection.append(propertiesTitle, propertiesMessage);
+
+  propertiesTab.append(propertiesSection);
+
+  // Spatial Tree 탭
+  const spatialTreeTab = document.createElement("div");
+  spatialTreeTab.className = "tab-content";
+  spatialTreeTab.dataset.tab = "spatial-tree";
+
+  const spatialTreeSection = document.createElement("section");
+  const spatialTreeTitle = document.createElement("h3");
+  spatialTreeTitle.textContent = "공간 구조";
+  const spatialTreeControls = document.createElement("div");
+  spatialTreeControls.className = "spatial-tree-controls";
+  const expandAllButton = document.createElement("button");
+  expandAllButton.title = "Expand All";
+  expandAllButton.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M5 4h14a1 1 0 0 1 .993.883L20 5v6h-2V6H6v12h12v-5h2v6a1 1 0 0 1-.883.993L19 20H5a1 1 0 0 1-.993-.883L4 19V5a1 1 0 0 1 .883-.993L5 4zm7 3a1 1 0 0 1 .993.883L13 8v2h2a1 1 0 0 1 .117 1.993L15 12h-2v2a1 1 0 0 1-1.993.117L11 14v-2H9a1 1 0 0 1-.117-1.993L9 10h2V8a1 1 0 0 1 1-1z"/></svg>`;
+  const expandStoreyButton = document.createElement("button");
+  expandStoreyButton.title = "Expand To Storeys";
+  expandStoreyButton.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M5 3h14a1 1 0 0 1 .993.883L20 4v16a1 1 0 0 1-.883.993L19 21H5a1 1 0 0 1-.993-.883L4 20V4a1 1 0 0 1 .883-.993L5 3h14H5zm1 2v2h12V5H6zm0 4v2h12V9H6zm0 4v2h7a1 1 0 0 1 .117 1.993L13 17H6v3h12v-3h-3a1 1 0 1 1 0-2h3v-2H6z"/></svg>`;
+  const collapseAllButton = document.createElement("button");
+  collapseAllButton.title = "Collapse All";
+  collapseAllButton.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M5 4h14a1 1 0 0 1 .993.883L20 5v6h-2V6H6v12h12v-5h2v6a1 1 0 0 1-.883.993L19 20H5a1 1 0 0 1-.993-.883L4 19V5a1 1 0 0 1 .883-.993L5 4zm7 5a1 1 0 0 1 .993.883L13 10v2h2a1 1 0 0 1 .117 1.993L15 14h-6a1 1 0 0 1-.117-1.993L9 12h2v-2a1 1 0 0 1 1-1z"/></svg>`;
+  spatialTreeControls.append(expandAllButton, expandStoreyButton, collapseAllButton);
+  const spatialTreeMessage = document.createElement("p");
+  spatialTreeMessage.className = "empty-message";
+  spatialTreeMessage.textContent = "모델을 불러오면 공간 구조가 표시됩니다.";
+  const spatialTreeContainer = document.createElement("div");
+  spatialTreeContainer.className = "spatial-tree-container";
+  spatialTreeSection.append(spatialTreeTitle, spatialTreeControls, spatialTreeMessage, spatialTreeContainer);
+
+  spatialTreeTab.append(spatialTreeSection);
+
+  tabContents.append(modelsTab, propertiesTab, spatialTreeTab);
+
+  // 상태 표시 영역
   const statusSection = document.createElement("section");
+  statusSection.className = "status-section";
 
   const status = document.createElement("p");
   status.textContent = "";
@@ -208,14 +465,58 @@ function buildUi(root: HTMLElement) {
 
   statusSection.append(status, progress);
 
-  const footer = document.createElement("p");
-  footer.className = "footer-note";
-  footer.innerHTML =
-    '참고 문서: <a href="https://docs.thatopen.com/components/getting-started" target="_blank" rel="noreferrer">Getting started</a> · ' +
-    '<a href="https://docs.thatopen.com/components/creating-components" target="_blank" rel="noreferrer">Creating components</a> · ' +
-    '<a href="https://docs.thatopen.com/components/clean-components-guide" target="_blank" rel="noreferrer">Clean components</a>';
+  root.append(title, tabHeader, tabContents, statusSection);
 
-  root.append(title, description, actions, statusSection, footer);
+  // 탭 전환 이벤트
+  const tabButtons = [modelsTabBtn, propertiesTabBtn, spatialTreeTabBtn];
+  const tabs = [modelsTab, propertiesTab, spatialTreeTab];
+
+  let spatialTreeExpandHandler: (() => void) | null = null;
+  let spatialTreeElement: HTMLElement | null = null;
+
+  const setTreeControlsEnabled = (enabled: boolean) => {
+    expandAllButton.disabled = !enabled;
+    expandStoreyButton.disabled = !enabled;
+    collapseAllButton.disabled = !enabled;
+  };
+
+  setTreeControlsEnabled(false);
+
+  expandAllButton.addEventListener("click", () => {
+    if (!spatialTreeElement) return;
+    void expandAllInSpatialTree(spatialTreeElement);
+  });
+
+  expandStoreyButton.addEventListener("click", () => {
+    if (!spatialTreeElement) return;
+    void expandToStoreyLevel(spatialTreeElement);
+  });
+
+  collapseAllButton.addEventListener("click", () => {
+    if (!spatialTreeElement) return;
+    void collapseAllInSpatialTree(spatialTreeElement);
+  });
+
+  tabButtons.forEach(btn => {
+    btn.addEventListener("click", () => {
+      const targetTab = btn.dataset.tab;
+      
+      tabButtons.forEach(b => b.classList.remove("active"));
+      tabs.forEach(t => t.classList.remove("active"));
+
+      btn.classList.add("active");
+      const contentTab = tabs.find(t => t.dataset.tab === targetTab);
+      if (contentTab) {
+        contentTab.classList.add("active");
+      }
+
+      if (targetTab === "spatial-tree") {
+        window.requestAnimationFrame(() => {
+          spatialTreeExpandHandler?.();
+        });
+      }
+    });
+  });
 
   return {
     setBusy(active: boolean) {
@@ -247,15 +548,506 @@ function buildUi(root: HTMLElement) {
           fileInput.value = "";
         }
       });
+    },
+    updateModelsTab(elements: { modelsList: HTMLElement; loadBtn: HTMLElement }) {
+      // Fragment 버튼 추가
+      const fragmentContainer = fragmentSection.querySelector("div") || document.createElement("div");
+      if (!fragmentContainer.parentElement) {
+        fragmentSection.append(fragmentContainer);
+      }
+      fragmentContainer.innerHTML = "";
+      fragmentContainer.append(elements.loadBtn);
+
+      // Models 리스트 추가
+      const modelsListContainer = modelsListSection.querySelector("div") || document.createElement("div");
+      if (!modelsListContainer.parentElement) {
+        modelsListSection.append(modelsListContainer);
+      }
+      modelsListContainer.innerHTML = "";
+      modelsListContainer.append(elements.modelsList);
+    },
+    updatePropertiesTab(propertiesTable: HTMLElement) {
+      propertiesSection.innerHTML = "";
+      propertiesSection.append(propertiesTitle, propertiesTable);
+    },
+    updateSpatialTreeTab(spatialTree: HTMLElement) {
+      spatialTreeContainer.innerHTML = "";
+      spatialTreeContainer.append(spatialTree);
+      spatialTreeMessage.style.display = "none";
+      spatialTreeElement = spatialTree;
+      setTreeControlsEnabled(true);
+    },
+    registerSpatialTreeExpand(handler: () => void) {
+      spatialTreeExpandHandler = handler;
     }
   };
 }
 
-function clamp(value: number) {
-  if (Number.isNaN(value)) {
-    return 0;
+function buildToolbar(context: ToolbarContext): ToolbarUpdater {
+  const { world, ui, hoverer, highlighter, postproduction, hider, finder, views } =
+    context;
+
+  const toolbar = document.createElement("div");
+  toolbar.id = "toolbar";
+
+  const popup = document.createElement("div");
+  popup.id = "toolbar-popup";
+
+  const popupTitle = document.createElement("h2");
+  const popupList = document.createElement("div");
+  popupList.className = "toolbar-popup-list";
+  const popupMessage = document.createElement("p");
+  popupMessage.className = "toolbar-message";
+
+  popup.append(popupTitle, popupList, popupMessage);
+
+  document.body.append(toolbar, popup);
+
+  let currentMenu: "classifier" | "finder" | "views" | null = null;
+  let classifierItems: ToolbarMenuItem[] = [];
+  let finderItems: ToolbarMenuItem[] = [];
+  let viewItems: ToolbarMenuItem[] = [];
+
+  views.list.onItemSet.add(() => {
+    viewItems = buildViewItems(views, ui);
+    if (currentMenu === "views") {
+      renderMenu(viewItems, "저장된 뷰", "모델을 불러와 2D 뷰를 생성하면 나타납니다.");
+    }
+  });
+
+  views.list.onItemDeleted.add(() => {
+    viewItems = buildViewItems(views, ui);
+    if (currentMenu === "views") {
+      renderMenu(viewItems, "저장된 뷰", "모델을 불러와 2D 뷰를 생성하면 나타납니다.");
+    }
+  });
+
+  views.list.onCleared?.add(() => {
+    viewItems = [];
+    if (currentMenu === "views") {
+      renderMenu(viewItems, "저장된 뷰", "모델을 불러와 2D 뷰를 생성하면 나타납니다.");
+    }
+  });
+
+  function closeMenu() {
+    currentMenu = null;
+    popup.classList.remove("visible");
   }
-  return Math.max(0, Math.min(1, value));
+
+  function renderMenu(items: ToolbarMenuItem[], title: string, emptyHint: string) {
+    if (currentMenu === null) {
+      closeMenu();
+      return;
+    }
+    popupTitle.textContent = title;
+    popupList.innerHTML = "";
+
+    if (items.length === 0) {
+      popupMessage.textContent = emptyHint;
+    } else {
+      popupMessage.textContent = "";
+      for (const item of items) {
+        const button = document.createElement("button");
+        button.className = "toolbar-button secondary";
+        button.textContent = item.label;
+        button.addEventListener("click", async () => {
+          button.disabled = true;
+          try {
+            await item.action();
+            closeMenu();
+          } finally {
+            button.disabled = false;
+          }
+        });
+        if (item.hint) {
+          button.title = item.hint;
+        }
+        popupList.append(button);
+      }
+    }
+  }
+
+  function toggleMenu(
+    menu: "classifier" | "finder" | "views",
+    title: string,
+    emptyHint: string,
+    items: ToolbarMenuItem[]
+  ) {
+    if (currentMenu === menu && popup.classList.contains("visible")) {
+      closeMenu();
+      return;
+    }
+    currentMenu = menu;
+    popup.classList.add("visible");
+    renderMenu(items, title, emptyHint);
+  }
+
+  const clearSelectionBtn = document.createElement("button");
+  clearSelectionBtn.className = "toolbar-button";
+  clearSelectionBtn.textContent = "선택 초기화";
+  clearSelectionBtn.addEventListener("click", async () => {
+    await highlighter.clear("select");
+    ui.setStatus("선택을 초기화했습니다.");
+  });
+  toolbar.append(clearSelectionBtn);
+
+  const isolateBtn = document.createElement("button");
+  isolateBtn.className = "toolbar-button";
+  isolateBtn.textContent = "선택 격리";
+  isolateBtn.addEventListener("click", async () => {
+    const selection = highlighter.selection.select;
+    if (isSelectionEmpty(selection)) {
+      ui.setStatus("격리할 선택이 없습니다.");
+      return;
+    }
+    await hider.isolate(cloneModelIdMap(selection));
+    ui.setStatus("선택한 요소만 표시 중입니다.");
+  });
+  toolbar.append(isolateBtn);
+
+  const resetVisibilityBtn = document.createElement("button");
+  resetVisibilityBtn.className = "toolbar-button";
+  resetVisibilityBtn.textContent = "전체 표시";
+  resetVisibilityBtn.addEventListener("click", async () => {
+    await hider.set(true);
+    ui.setStatus("모델 전체를 다시 표시했습니다.");
+  });
+  toolbar.append(resetVisibilityBtn);
+
+  const hoverBtn = document.createElement("button");
+  hoverBtn.className = "toolbar-button";
+  hoverBtn.textContent = "호버 강조";
+  hoverBtn.classList.toggle("active", hoverer.enabled);
+  hoverBtn.addEventListener("click", () => {
+    hoverer.enabled = !hoverer.enabled;
+    hoverBtn.classList.toggle("active", hoverer.enabled);
+    ui.setStatus(
+      hoverer.enabled ? "호버 강조를 켰습니다." : "호버 강조를 끄고 기본 상태로 전환했습니다."
+    );
+  });
+  toolbar.append(hoverBtn);
+
+  const postBtn = document.createElement("button");
+  postBtn.className = "toolbar-button";
+  postBtn.textContent = "후처리";
+  postBtn.classList.toggle("active", postproduction.enabled);
+  postBtn.addEventListener("click", () => {
+    postproduction.enabled = !postproduction.enabled;
+    postBtn.classList.toggle("active", postproduction.enabled);
+    ui.setStatus(
+      postproduction.enabled
+        ? "후처리 효과를 활성화했습니다."
+        : "후처리 효과를 비활성화했습니다."
+    );
+  });
+  toolbar.append(postBtn);
+
+  const classifierBtn = document.createElement("button");
+  classifierBtn.className = "toolbar-button";
+  classifierBtn.textContent = "분류 보기";
+  classifierBtn.addEventListener("click", () => {
+    toggleMenu("classifier", "분류 그룹", "모델을 불러오면 자동으로 그룹이 준비됩니다.", classifierItems);
+  });
+  toolbar.append(classifierBtn);
+
+  const finderBtn = document.createElement("button");
+  finderBtn.className = "toolbar-button";
+  finderBtn.textContent = "빠른 찾기";
+  finderBtn.addEventListener("click", () => {
+    toggleMenu("finder", "즐겨찾는 검색", "모델을 불러오면 사용할 수 있습니다.", finderItems);
+  });
+  toolbar.append(finderBtn);
+
+  const projectionBtn = document.createElement("button");
+  projectionBtn.className = "toolbar-button";
+  projectionBtn.addEventListener("click", () => {
+    const projection = world.camera.projection.current;
+    const next = projection === "Perspective" ? "Orthographic" : "Perspective";
+    if (next === "Orthographic" && world.camera.mode.id === "FirstPerson") {
+      ui.setStatus("직교 투영은 1인칭 모드에서는 사용할 수 없습니다.");
+      return;
+    }
+    world.camera.projection.set(next);
+    ui.setStatus(`카메라 투영을 ${next === "Perspective" ? "원근" : "직교"}로 변경했습니다.`);
+    updateProjectionLabel();
+  });
+  toolbar.append(projectionBtn);
+
+  const cameraModeBtn = document.createElement("button");
+  cameraModeBtn.className = "toolbar-button";
+  cameraModeBtn.textContent = "카메라 모드: Orbit";
+  cameraModeBtn.addEventListener("click", () => {
+    const current = world.camera.mode.id;
+    const next = current === "Orbit" ? "Plan" : "Orbit";
+    world.camera.set(next);
+    cameraModeBtn.textContent = `카메라 모드: ${next}`;
+    ui.setStatus(`${next} 모드로 전환했습니다.`);
+  });
+  toolbar.append(cameraModeBtn);
+
+  const viewsBtn = document.createElement("button");
+  viewsBtn.className = "toolbar-button";
+  viewsBtn.textContent = "뷰 전환";
+  viewsBtn.addEventListener("click", () => {
+    toggleMenu("views", "저장된 뷰", "모델을 불러와 2D 뷰를 생성하면 나타납니다.", viewItems);
+  });
+  toolbar.append(viewsBtn);
+
+  const closeViewBtn = document.createElement("button");
+  closeViewBtn.className = "toolbar-button";
+  closeViewBtn.textContent = "뷰 닫기";
+  closeViewBtn.addEventListener("click", () => {
+    views.close();
+    ui.setStatus("활성 뷰를 닫았습니다.");
+  });
+  toolbar.append(closeViewBtn);
+
+  document.addEventListener("click", (event) => {
+    if (
+      popup.contains(event.target as Node) ||
+      toolbar.contains(event.target as Node)
+    ) {
+      return;
+    }
+    closeMenu();
+  });
+
+  function updateProjectionLabel() {
+    const projection = world.camera.projection.current;
+    projectionBtn.textContent =
+      projection === "Perspective" ? "투영: 원근" : "투영: 직교";
+  }
+
+  return {
+    updateClassifier(items) {
+      classifierItems = items;
+      if (currentMenu === "classifier") {
+        renderMenu(classifierItems, "분류 그룹", "모델을 불러오면 자동으로 그룹이 준비됩니다.");
+      }
+    },
+    updateFinder(items) {
+      finderItems = items;
+      if (currentMenu === "finder") {
+        renderMenu(finderItems, "즐겨찾는 검색", "모델을 불러오면 사용할 수 있습니다.");
+      }
+    },
+    updateViews(items) {
+      viewItems = items;
+      if (currentMenu === "views") {
+        renderMenu(viewItems, "저장된 뷰", "모델을 불러와 2D 뷰를 생성하면 나타납니다.");
+      }
+    },
+    refreshProjectionLabel: updateProjectionLabel
+  };
+}
+
+function setupViewCube(world: ViewerWorld, container: HTMLElement) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "viewcube-wrapper";
+
+  const viewCube = document.createElement("bim-view-cube") as ViewCubeElement;
+  viewCube.camera = world.camera.three;
+  wrapper.append(viewCube);
+  container.append(wrapper);
+
+  let activeControls = world.camera.controls;
+
+  const syncOrientation = () => {
+    if (typeof viewCube.updateOrientation === "function") {
+      viewCube.updateOrientation();
+    }
+  };
+
+  activeControls.addEventListener("update", syncOrientation);
+
+  world.onCameraChanged.add((camera) => {
+    activeControls.removeEventListener("update", syncOrientation);
+    activeControls = camera.controls;
+    viewCube.camera = camera.three;
+    syncOrientation();
+    activeControls.addEventListener("update", syncOrientation);
+  });
+
+  const applyOrientation = async (direction: THREE.Vector3) => {
+    const controls = activeControls as unknown as {
+      getTarget: (target: THREE.Vector3) => THREE.Vector3;
+      getPosition: (position: THREE.Vector3) => THREE.Vector3;
+      setLookAt: (
+        x: number,
+        y: number,
+        z: number,
+        tx: number,
+        ty: number,
+        tz: number,
+        enableTransition?: boolean
+      ) => Promise<void>;
+    };
+    const target = controls.getTarget(new THREE.Vector3());
+    const currentPos = controls.getPosition(new THREE.Vector3());
+    let radius = currentPos.distanceTo(target);
+    if (!Number.isFinite(radius) || radius <= 0) {
+      radius = 30;
+    }
+    const nextPos = target
+      .clone()
+      .add(direction.clone().normalize().multiplyScalar(radius));
+    await controls.setLookAt(
+      nextPos.x,
+      nextPos.y,
+      nextPos.z,
+      target.x,
+      target.y,
+      target.z,
+      true
+    );
+  };
+
+  const faceDirections: Record<string, THREE.Vector3> = {
+    front: new THREE.Vector3(0, 0, -1),
+    back: new THREE.Vector3(0, 0, 1),
+    left: new THREE.Vector3(-1, 0, 0),
+    right: new THREE.Vector3(1, 0, 0),
+    top: new THREE.Vector3(0, 1, 0),
+    bottom: new THREE.Vector3(0, -1, 0)
+  };
+
+  for (const [event, vector] of Object.entries(faceDirections)) {
+    viewCube.addEventListener(event, () => {
+      void applyOrientation(vector);
+    });
+  }
+}
+
+async function registerModelTools(params: {
+  model: OBC.FragmentsGroup;
+  world: ViewerWorld;
+  toolbar: ToolbarUpdater;
+  views: OBC.Views;
+  hider: OBC.Hider;
+  classifier: OBC.Classifier;
+  finder: OBC.ItemsFinder;
+  ui: UiController;
+}) {
+  const { model, world, toolbar, views, hider, classifier, finder, ui } = params;
+  const modelId = model.modelId;
+  if (processedModels.has(modelId)) return;
+  processedModels.add(modelId);
+
+  const categoryGroups: Array<{
+    label: string;
+    categories: RegExp[];
+  }> = [
+    { label: "구조 부재", categories: [/BEAM/i, /COLUMN/i, /SLAB/i, /FOOTING/i] },
+    { label: "외벽과 창호", categories: [/WALL/i, /WINDOW/i, /DOOR/i] },
+    { label: "지붕 및 상부", categories: [/ROOF/i, /SLAB/i] }
+  ];
+
+  for (const group of categoryGroups) {
+    const items = await model.getItemsOfCategories(group.categories);
+    const ids = Object.values(items).flat();
+    if (ids.length === 0) continue;
+    const map: OBC.ModelIdMap = {
+      [modelId]: new Set(ids)
+    };
+    const existing = classifierSelections.get(group.label);
+    if (existing) {
+      mergeModelIdMap(existing, map);
+    } else {
+      classifierSelections.set(group.label, map);
+    }
+    const groupData = classifier.getGroupData("기본 분류", group.label);
+    mergeModelIdMap(groupData.map, map);
+  }
+
+  const classifierItems: ToolbarMenuItem[] = [...classifierSelections.entries()].map(
+    ([label, selection]) => ({
+      label,
+      action: async () => {
+        await hider.isolate(cloneModelIdMap(selection));
+        ui.setStatus(`${label} 그룹만 표시했습니다.`);
+      }
+    })
+  );
+  toolbar.updateClassifier(classifierItems);
+
+  ensureFinderQueries(finder);
+  const finderItems = [...finderQueryRegistry.entries()].map(([label, queryName]) => ({
+    label,
+    action: async () => {
+      const query = finder.list.get(queryName);
+      if (!query) return;
+      const result = await query.test();
+      if (isSelectionEmpty(result)) {
+        ui.setStatus(`${label} 결과가 없습니다.`);
+        return;
+      }
+      await hider.isolate(result);
+      ui.setStatus(`${label} 결과를 격리했습니다.`);
+    }
+  }));
+  toolbar.updateFinder(finderItems);
+
+  await views.createFromIfcStoreys({
+    modelIds: [new RegExp(`^${escapeRegExp(modelId)}$`, "i")],
+    world
+  });
+
+  toolbar.updateViews(buildViewItems(views, ui));
+}
+
+function buildViewItems(views: OBC.Views, ui: UiController): ToolbarMenuItem[] {
+  return [...views.list.keys()].map((id) => ({
+    label: id,
+    action: () => {
+      views.open(id);
+      ui.setStatus(`${id} 뷰를 열었습니다.`);
+    }
+  }));
+}
+
+function ensureFinderQueries(finder: OBC.ItemsFinder) {
+  const definitions: Array<{
+    label: string;
+    name: string;
+    config: Parameters<OBC.ItemsFinder["create"]>[1];
+  }> = [
+    {
+      label: "모든 벽",
+      name: "Query::AllWalls",
+      config: [{ categories: [/WALL/i] }]
+    },
+    {
+      label: "문과 창",
+      name: "Query::DoorsAndWindows",
+      config: [{ categories: [/DOOR/i, /WINDOW/i] }]
+    },
+    {
+      label: "기둥과 보",
+      name: "Query::ColumnsBeams",
+      config: [{ categories: [/COLUMN/i, /BEAM/i] }]
+    }
+  ];
+
+  for (const def of definitions) {
+    if (!finder.list.has(def.name)) {
+      finder.create(def.name, def.config);
+    }
+    finderQueryRegistry.set(def.label, def.name);
+  }
+}
+
+async function createFragmentWorker() {
+  const response = await fetch(
+    "https://thatopen.github.io/engine_fragment/resources/worker.mjs"
+  );
+  if (!response.ok) {
+    throw new Error("Failed to download fragment worker");
+  }
+  const blob = await response.blob();
+  const file = new File([blob], "worker.mjs", {
+    type: "text/javascript"
+  });
+  return URL.createObjectURL(file);
 }
 
 async function fetchIfc(url: string) {
@@ -302,4 +1094,213 @@ function extractProgress(state: unknown) {
   }
 
   return undefined;
+}
+
+function clamp(value: number) {
+  if (Number.isNaN(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(1, value));
+}
+
+function isSelectionEmpty(map: OBC.ModelIdMap) {
+  return Object.values(map).every((set) => set.size === 0);
+}
+
+function countSelection(map: OBC.ModelIdMap) {
+  let total = 0;
+  for (const set of Object.values(map)) {
+    total += set.size;
+  }
+  return total;
+}
+
+function cloneModelIdMap(map: OBC.ModelIdMap): OBC.ModelIdMap {
+  const clone: OBC.ModelIdMap = {};
+  for (const [modelId, ids] of Object.entries(map)) {
+    clone[modelId] = new Set(ids);
+  }
+  return clone;
+}
+
+function mergeModelIdMap(target: OBC.ModelIdMap, addition: OBC.ModelIdMap) {
+  for (const [modelId, ids] of Object.entries(addition)) {
+    const current = target[modelId] ?? new Set<number>();
+    for (const id of ids) {
+      current.add(id);
+    }
+    target[modelId] = current;
+  }
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function getPostproduction(world: ViewerWorld) {
+  const post = world.renderer.postproduction;
+  post.enabled = true;
+  post.outlinesEnabled = true;
+  post.style = PostproductionAspect.COLOR_SHADOWS;
+  return post;
+}
+
+async function expandToStoreyLevel(tableElement: HTMLElement) {
+  const table = findTableElement(tableElement);
+  if (!table) return;
+
+  table.expanded = false;
+  await waitForElementUpdate(table);
+
+  const roots = await waitForRootGroups(table);
+  await expandGroupsRecursive(roots, 1, MAX_AUTO_EXPANSION_DEPTH);
+}
+
+function findTableElement(element: HTMLElement): HTMLElement | null {
+  if (element.tagName.toLowerCase() === "bim-table") return element;
+  const nested = element.querySelector("bim-table");
+  return nested ? (nested as HTMLElement) : null;
+}
+
+async function waitForRootGroups(table: HTMLElement) {
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const groups = collectRootGroups(table);
+    if (groups.length > 0) return groups;
+    await waitForElementUpdate(table);
+    await delay(50);
+  }
+  return [];
+}
+
+function collectRootGroups(table: HTMLElement): HTMLElement[] {
+  const root = table.shadowRoot;
+  if (!root) return [];
+  return Array.from(root.querySelectorAll("bim-table-group")) as HTMLElement[];
+}
+
+function collectChildGroups(group: HTMLElement): HTMLElement[] {
+  const shadow = group.shadowRoot;
+  if (!shadow) return [];
+  const childrenHost = shadow.querySelector("bim-table-children");
+  if (!(childrenHost instanceof HTMLElement)) return [];
+  const result = new Set<HTMLElement>();
+  const directChildren = childrenHost.querySelectorAll("bim-table-group");
+  directChildren.forEach((child) => result.add(child as HTMLElement));
+  const shadowChildren = childrenHost.shadowRoot?.querySelectorAll("bim-table-group");
+  shadowChildren?.forEach((child) => result.add(child as HTMLElement));
+  const storedGroups = (childrenHost as any)._groups as Iterable<HTMLElement> | undefined;
+  if (storedGroups) {
+    for (const child of storedGroups) {
+      if (child instanceof HTMLElement) result.add(child);
+    }
+  }
+  return Array.from(result).filter((child) => findParentGroup(child) === group);
+}
+
+function getGroupData(group: HTMLElement): any {
+  return (group as any).data;
+}
+
+async function waitForElementUpdate(element: any) {
+  try {
+    const updateComplete = element?.updateComplete;
+    if (updateComplete instanceof Promise) await updateComplete;
+  } catch (error) {
+    console.warn("Failed waiting for update", error);
+  }
+  await delay(0);
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const MAX_AUTO_EXPANSION_DEPTH = 5;
+
+function computeGroupDepth(group: HTMLElement): number {
+  let depth = 0;
+  let cursor: Node | null = group;
+  while (cursor) {
+    if (cursor instanceof HTMLElement && cursor.tagName.toLowerCase() === "bim-table-group") {
+      depth += 1;
+    }
+    cursor = getParentNodeAcrossShadow(cursor);
+  }
+  return depth;
+}
+
+function getParentNodeAcrossShadow(node: Node | null): Node | null {
+  if (!node) return null;
+  if (node instanceof ShadowRoot) {
+    return node.host;
+  }
+  const parent = node.parentNode;
+  if (!parent) return null;
+  if (parent instanceof ShadowRoot) {
+    return parent;
+  }
+  return parent;
+}
+
+function findParentGroup(group: HTMLElement): HTMLElement | null {
+  let cursor: Node | null = group;
+  while ((cursor = getParentNodeAcrossShadow(cursor))) {
+    if (cursor instanceof HTMLElement && cursor.tagName.toLowerCase() === "bim-table-group") {
+      return cursor;
+    }
+  }
+  return null;
+}
+
+async function expandGroupsRecursive(groups: HTMLElement[], depth: number, maxDepth: number) {
+  if (depth > maxDepth) return;
+  for (const group of groups) {
+    if (!hasExpandableChildren(group)) continue;
+    await ensureGroupOpened(group);
+    const children = await waitForChildGroups(group);
+    if (children.length === 0) continue;
+    await expandGroupsRecursive(children, depth + 1, maxDepth);
+  }
+}
+
+async function ensureGroupOpened(group: HTMLElement) {
+  const controller = group as any;
+  if (!controller || typeof controller.toggleChildren !== "function") return;
+  if (!controller.childrenHidden) return;
+  controller.toggleChildren(true);
+  await waitForElementUpdate(controller);
+}
+
+async function waitForChildGroups(group: HTMLElement) {
+  if (!hasExpandableChildren(group)) return [];
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const children = collectChildGroups(group);
+    if (children.length > 0) return children;
+    await waitForElementUpdate(group);
+    await delay(50);
+  }
+  return [];
+}
+
+async function expandAllInSpatialTree(tableElement: HTMLElement) {
+  const table = findTableElement(tableElement);
+  if (!table) return;
+  table.expanded = true;
+  await waitForElementUpdate(table);
+}
+
+async function collapseAllInSpatialTree(tableElement: HTMLElement) {
+  const table = findTableElement(tableElement);
+  if (!table) return;
+  table.expanded = false;
+  await waitForElementUpdate(table);
+}
+
+function hasExpandableChildren(group: HTMLElement): boolean {
+  const data = getGroupData(group);
+  if (!data) return false;
+  const children = data.children;
+  if (Array.isArray(children)) return children.length > 0;
+  if (typeof children === "string") return children.trim().length > 0;
+  return Boolean(children);
 }
