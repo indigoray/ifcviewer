@@ -103,9 +103,6 @@ async function bootstrap() {
       renderedFaces: 0
     }
   });
-  
-  // 하이라이트 성능 최적화: 배치 업데이트 활성화
-  highlighter.zoomToSelection = false; // 줌 비활성화로 성능 개선
 
   const hoverer = components.get(OBF.Hoverer);
   hoverer.world = world;
@@ -226,21 +223,14 @@ async function bootstrap() {
   });
 
   // 선택 변경 시 속성 테이블 업데이트 및 상태 업데이트
-  let propertiesUpdateTimer: ReturnType<typeof setTimeout> | null = null;
   highlighter.events.select.onHighlight.add((modelIdMap) => {
     const count = countSelection(modelIdMap);
     if (count > 0) {
       ui.setStatus(`선택된 요소 ${count.toLocaleString("ko-KR")}개`);
     }
 
-    // Properties 탭 업데이트를 debounce 처리 (빠른 연속 선택 시 마지막만 반영)
-    if (propertiesUpdateTimer) {
-      clearTimeout(propertiesUpdateTimer);
-    }
-    propertiesUpdateTimer = setTimeout(() => {
-      updatePropertiesTable({ modelIdMap });
-      propertiesUpdateTimer = null;
-    }, 50); // 50ms 지연으로 반응성 유지하면서 불필요한 업데이트 방지
+    // Properties 탭 업데이트 - updatePropertiesTable 함수 사용
+    updatePropertiesTable({ modelIdMap });
   });
 
   highlighter.events.select.onClear.add(() => {
