@@ -868,54 +868,30 @@ function setupViewCube(world: ViewerWorld, container: HTMLElement) {
     activeControls.addEventListener("update", syncOrientation);
   });
 
-  const applyOrientation = async (direction: THREE.Vector3) => {
-    const controls = activeControls as unknown as {
-      getTarget: (target: THREE.Vector3) => THREE.Vector3;
-      getPosition: (position: THREE.Vector3) => THREE.Vector3;
-      setLookAt: (
-        x: number,
-        y: number,
-        z: number,
-        tx: number,
-        ty: number,
-        tz: number,
-        enableTransition?: boolean
-      ) => Promise<void>;
-    };
-    const target = controls.getTarget(new THREE.Vector3());
-    const currentPos = controls.getPosition(new THREE.Vector3());
-    let radius = currentPos.distanceTo(target);
-    if (!Number.isFinite(radius) || radius <= 0) {
-      radius = 30;
-    }
-    const nextPos = target
-      .clone()
-      .add(direction.clone().normalize().multiplyScalar(radius));
-    await controls.setLookAt(
-      nextPos.x,
-      nextPos.y,
-      nextPos.z,
-      target.x,
-      target.y,
-      target.z,
-      true
-    );
-  };
+  // 올바른 이벤트 이름 사용: frontclick, backclick 등
+  viewCube.addEventListener("frontclick", () => {
+    world.camera.controls.setLookAt(0, 10, 50, 0, 0, 0, true);
+  });
 
-  const faceDirections: Record<string, THREE.Vector3> = {
-    front: new THREE.Vector3(0, 0, -1),
-    back: new THREE.Vector3(0, 0, 1),
-    left: new THREE.Vector3(-1, 0, 0),
-    right: new THREE.Vector3(1, 0, 0),
-    top: new THREE.Vector3(0, 1, 0),
-    bottom: new THREE.Vector3(0, -1, 0)
-  };
+  viewCube.addEventListener("backclick", () => {
+    world.camera.controls.setLookAt(0, 10, -50, 0, 0, 0, true);
+  });
 
-  for (const [event, vector] of Object.entries(faceDirections)) {
-    viewCube.addEventListener(event, () => {
-      void applyOrientation(vector);
-    });
-  }
+  viewCube.addEventListener("leftclick", () => {
+    world.camera.controls.setLookAt(-50, 10, 0, 0, 0, 0, true);
+  });
+
+  viewCube.addEventListener("rightclick", () => {
+    world.camera.controls.setLookAt(50, 10, 0, 0, 0, 0, true);
+  });
+
+  viewCube.addEventListener("topclick", () => {
+    world.camera.controls.setLookAt(0, 50, 0, 0, 0, 0, true);
+  });
+
+  viewCube.addEventListener("bottomclick", () => {
+    world.camera.controls.setLookAt(0, -50, 0, 0, 0, 0, true);
+  });
 }
 
 async function registerModelTools(params: {
