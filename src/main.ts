@@ -103,6 +103,9 @@ async function bootstrap() {
       renderedFaces: 0
     }
   });
+  
+  // 하이라이트 성능 최적화: 배치 업데이트 활성화
+  highlighter.zoomToSelection = false; // 줌 비활성화로 성능 개선
 
   const hoverer = components.get(OBF.Hoverer);
   hoverer.world = world;
@@ -115,6 +118,7 @@ async function bootstrap() {
   });
 
   const postproduction = getPostproduction(world);
+  postproduction.enabled = false;
   const gridsComponent = components.get(OBC.Grids);
   const grid = gridsComponent.create(world);
   const views = components.get(OBC.Views);
@@ -222,14 +226,22 @@ async function bootstrap() {
   });
 
   // 선택 변경 시 속성 테이블 업데이트 및 상태 업데이트
+  // debounce를 통해 빠른 연속 선택 시 성능 개선
+  let highlightTimeout: ReturnType<typeof setTimeout> | null = null;
   highlighter.events.select.onHighlight.add((modelIdMap) => {
     const count = countSelection(modelIdMap);
     if (count > 0) {
       ui.setStatus(`선택된 요소 ${count.toLocaleString("ko-KR")}개`);
     }
 
-    // Properties 탭 업데이트 - updatePropertiesTable 함수 사용
-    updatePropertiesTable({ modelIdMap });
+    // Properties 탭 업데이트를 debounce 처리
+    if (highlightTimeout) {
+      clearTimeout(highlightTimeout);
+    }
+    highlightTimeout = setTimeout(() => {
+      updatePropertiesTable({ modelIdMap });
+      highlightTimeout = null;
+    }, 100); // 100ms 지연으로 빠른 연속 업데이트 방지
   });
 
   highlighter.events.select.onClear.add(() => {
@@ -357,21 +369,33 @@ async function prepareFragments(
   const workerUrl = await createFragmentWorker();
   fragments.init(workerUrl);
 
+  // fragments 업데이트를 throttle 처리하여 성능 개선
+  let updateScheduled = false;
+  const scheduleFragmentsUpdate = () => {
+    if (!updateScheduled) {
+      updateScheduled = true;
+      requestAnimationFrame(() => {
+        fragments.core.update(true);
+        updateScheduled = false;
+      });
+    }
+  };
+
   world.camera.controls.addEventListener("rest", () => {
-    fragments.core.update(true);
+    scheduleFragmentsUpdate();
   });
 
   world.onCameraChanged.add((camera) => {
     for (const [, model] of fragments.list) {
       model.useCamera(camera.three);
     }
-    fragments.core.update(true);
+    scheduleFragmentsUpdate();
   });
 
   fragments.list.onItemSet.add(({ value: model }) => {
     model.useCamera(world.camera.three);
     world.scene.three.add(model.object);
-    fragments.core.update(true);
+    scheduleFragmentsUpdate();
   });
 
   return workerUrl;
@@ -381,7 +405,7 @@ function buildUi(root: HTMLElement): UiController {
   root.innerHTML = "";
 
   const title = document.createElement("h1");
-  title.textContent = "Ifc Viewer";
+  title.textContent = "IFC Viewer";
 
   // 탭 헤더
   const tabHeader = document.createElement("div");
@@ -415,7 +439,7 @@ function buildUi(root: HTMLElement): UiController {
 
   const modelsSection = document.createElement("section");
   const modelsSectionTitle = document.createElement("h3");
-  modelsSectionTitle.textContent = "모델 불러오기";
+  modelsSectionTitle.textContent = "샘플 모델 불러오기";
 
   // IFC 파일 선택 드롭다운
   const sampleContainer = document.createElement("div");
