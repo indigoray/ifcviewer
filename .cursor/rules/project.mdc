@@ -1,0 +1,259 @@
+# IFC Viewer 프로젝트 규칙
+
+## 프로젝트 개요
+
+IFC(Industry Foundation Classes) 파일을 웹 브라우저에서 시각화하고 탐색하는 3D BIM(Building Information Modeling) 뷰어입니다.
+
+### 기술 스택
+- **언어**: TypeScript 5.4+
+- **빌드 도구**: Vite 5.1+
+- **3D 렌더링**: Three.js 0.175
+- **BIM 컴포넌트**: @thatopen/components 3.1.6, @thatopen/components-front 3.1.7
+- **UI**: @thatopen/ui 3.1.0, @thatopen/ui-obc 3.1.6
+- **IFC 파싱**: web-ifc 0.0.71
+- **성능 모니터링**: stats.js 0.17
+
+## 아키텍처 패턴
+
+### 컴포넌트 기반 구조
+- `OBC.Components` 컨테이너를 중심으로 모든 기능 컴포넌트 관리
+- `World` 패턴: Scene, Camera, Renderer의 조합으로 3D 환경 구성
+- `FragmentsManager`를 통한 IFC 데이터 관리
+
+### 주요 컴포넌트
+1. **World 구성**
+   - Scene: `OBC.SimpleScene`
+   - Camera: `OBC.OrthoPerspectiveCamera`
+   - Renderer: `OBF.PostproductionRenderer`
+
+2. **IFC 처리**
+   - `IfcLoader`: IFC 파일 로드 및 파싱
+   - `FragmentsManager`: 변환된 프래그먼트 관리
+   - Worker: 별도 스레드에서 프래그먼트 처리
+
+3. **상호작용 도구**
+   - `Highlighter`: 선택 강조
+   - `Hoverer`: 마우스 호버 효과
+   - `Hider`: 요소 가시성 관리
+   - `Classifier`: 요소 분류
+   - `ItemsFinder`: 빠른 검색
+   - `Views`: 2D/3D 뷰 전환
+
+## 코딩 가이드라인
+
+### TypeScript 규칙
+- **타입 안전성 우선**: 모든 함수와 변수에 명시적 타입 지정
+- **타입 별칭 활용**: 복잡한 타입은 `type` 키워드로 정의 (예: `ViewerWorld`, `UiController`)
+- **인터페이스보다 타입**: 이 프로젝트에서는 타입 별칭 선호
+- **null/undefined 체크**: 옵셔널 체이닝(?.) 및 nullish coalescing(??) 활용
+- **any 금지**: 불가피한 경우 `unknown`과 타입 가드 사용
+
+### Three.js 베스트 프랙티스
+- **메모리 관리**: geometry, material, texture는 반드시 dispose 호출
+- **렌더 루프**: 변경사항이 있을 때만 렌더링 (불필요한 CPU 낭비 방지)
+- **좌표계**: Y-up 좌표계 사용 (IFC 표준)
+- **성능 최적화**: 
+  - 큰 모델은 LOD(Level of Detail) 고려
+  - 프래그먼트 단위로 분할 관리
+  - 레이캐스팅 최적화
+
+### @thatopen/components 패턴
+- **컴포넌트 획득**: `components.get(ComponentClass)` 패턴 사용
+- **초기화 순서**: World → FragmentsManager → 기타 컴포넌트
+- **이벤트 처리**: `.onItemSet.add()`, `.onHighlight.add()` 등 이벤트 리스너 활용
+- **비동기 setup**: 모든 컴포넌트 setup()은 await로 순차 실행
+
+### 상태 관리
+- **전역 상태**: 
+  - `processedModels`: 로드된 모델 ID 집합
+  - `classifierSelections`: 분류별 선택 맵
+  - `finderQueryRegistry`: 검색 쿼리 레지스트리
+- **로컬 상태**: 각 함수 스코프 내에서 관리
+- **부작용 격리**: UI 업데이트와 비즈니스 로직 분리
+
+## 파일 구조
+
+```
+/
+├── src/
+│   ├── main.ts          # 메인 진입점 (모든 로직 포함)
+│   └── style.css        # 전역 스타일
+├── public/              # 정적 자원
+├── IFC/                 # IFC 샘플 파일
+├── index.html           # HTML 진입점
+├── vite.config.ts       # Vite 설정
+└── tsconfig.json        # TypeScript 설정
+```
+
+## 개발 가이드
+
+### 새 기능 추가 시
+1. 해당 @thatopen/components 공식 문서 참조 (https://docs.thatopen.com/)
+2. 컴포넌트 초기화는 `bootstrap()` 함수 내에서 순차적으로 진행
+3. UI 컨트롤은 `buildUi()` 또는 `buildToolbar()` 함수에서 구성
+4. 이벤트 리스너는 컴포넌트 초기화 직후 등록
+
+### IFC 로딩 플로우
+1. 사용자 선택/샘플 다운로드
+2. ArrayBuffer로 변환
+3. `IfcLoader.load()` 호출
+4. 진행률 콜백으로 UI 업데이트
+5. Fragment 생성 및 Scene 추가
+6. 카메라 포커스 및 그리드 업데이트
+7. 분류기/검색기 메뉴 갱신
+
+### 성능 고려사항
+- **큰 IFC 파일**: 5MB 이상의 파일은 로딩 시간 안내
+- **프래그먼트 캐싱**: 변환된 Fragment는 재사용 가능 (.frag 포맷)
+- **렌더 제어**: 카메라 휴식 이벤트 활용해 불필요한 렌더링 방지
+- **Worker 활용**: Fragment 변환은 별도 스레드에서 처리
+
+### 디버깅 팁
+- `console.log("[DEBUG] ...")` 패턴으로 주요 이벤트 로깅
+- Stats.js로 FPS/메모리 모니터링
+- Three.js DevTools 크롬 확장 활용 권장
+- Fragment 상태는 `FragmentsManager.list` 확인
+
+## UI/UX 가이드라인
+
+### 사용자 피드백
+- 모든 비동기 작업은 로딩 상태 표시 (`ui.setBusy()`)
+- 진행률은 백분율로 명확히 표시 (`ui.setProgress()`)
+- 상태 메시지는 한국어로 간결하게 (`ui.setStatus()`)
+- 오류는 콘솔과 UI 모두에 표시
+
+### 반응형 레이아웃
+- 뷰어는 전체 화면 활용
+- 사이드 패널은 토글 가능
+- 모바일은 기본 지원 (터치 이벤트 처리)
+
+### 접근성
+- 키보드 단축키 지원 고려
+- 명암비 4.5:1 이상 유지
+- 색상만으로 정보 전달하지 않기
+
+## 외부 의존성 주의사항
+
+### web-ifc
+- **버전 고정**: 0.0.71 (호환성 이슈)
+- **WASM 경로**: CDN (unpkg.com) 사용
+- **메모리**: 큰 파일은 메모리 부족 가능 (브라우저 제한)
+
+### @thatopen/components
+- **Breaking Changes**: 마이너 버전 업데이트 시 API 변경 가능
+- **Worker 경로**: 공식 CDN 또는 로컬 복사본 사용
+- **문서 우선**: 공식 튜토리얼과 예제 코드 참조
+
+## 빌드 & 배포
+
+### 개발 서버
+```bash
+npm run dev  # http://0.0.0.0:8001
+```
+
+### 프로덕션 빌드
+```bash
+npm run build  # dist/ 폴더 생성
+```
+
+### 배포 시 체크리스트
+- [ ] TypeScript 컴파일 오류 없음
+- [ ] Vite 빌드 성공
+- [ ] 샘플 IFC 파일 로드 테스트
+- [ ] 주요 기능 동작 확인 (선택, 호버, 검색, 분류)
+- [ ] 브라우저 콘솔 오류 없음
+- [ ] 성능 (60fps 이상)
+
+## 문서 및 참고자료
+
+### 공식 문서
+- [That Open Components Docs](https://docs.thatopen.com/)
+- [That Open Components GitHub](https://github.com/ThatOpen/engine_components)
+- [Three.js Documentation](https://threejs.org/docs/)
+- [IFC.js Documentation](https://ifcjs.github.io/info/)
+
+### 주요 튜토리얼
+- [Getting Started](https://docs.thatopen.com/components/getting-started)
+- [Creating Components](https://docs.thatopen.com/components/creating-components)
+- [ViewCube Tutorial](https://docs.thatopen.com/Tutorials/UserInterface/OBC/ViewCube)
+
+### 문제 해결
+- 공식 Discord 커뮤니티 활용
+- GitHub Issues 검색
+- Stack Overflow: `three.js`, `ifc.js` 태그
+
+## 코드 스타일
+
+### 네이밍 컨벤션
+- **변수/함수**: camelCase (`loadIfcBuffer`, `updatePropertiesTable`)
+- **타입/클래스**: PascalCase (`ViewerWorld`, `UiController`)
+- **상수**: UPPER_SNAKE_CASE (`SAMPLE_IFC_URL`)
+- **Private 메서드**: 접두사 없음 (TypeScript private 키워드 사용)
+
+### 함수 작성
+- **단일 책임**: 한 함수는 한 가지 일만
+- **순수 함수 선호**: 부작용 최소화
+- **async/await**: Promise는 async/await로 처리
+- **에러 처리**: try-catch로 명시적 에러 핸들링
+
+### 주석
+- **JSDoc 스타일**: 퍼블릭 API는 JSDoc으로 문서화
+- **TODO 표시**: `// TODO: 설명` 형식
+- **중요 로직**: 복잡한 알고리즘은 상세 주석
+- **한국어 허용**: 도메인 특화 용어는 한국어 주석 가능
+
+## Git 커밋 메시지
+- 간결하고 핵심만
+- 음슴체 사용 (예: "IFC 로더 성능 개선", "UI 버그 수정")
+- 타입 접두사: `feat:`, `fix:`, `refactor:`, `docs:` 등
+
+## 주의사항
+
+⚠️ **메모리 누수 방지**
+- 컴포넌트 dispose 후 반드시 참조 해제
+- 이벤트 리스너 등록 시 제거 로직도 함께 구현
+- Three.js 객체는 명시적 dispose 호출
+
+⚠️ **비동기 처리**
+- race condition 주의 (여러 IFC 동시 로드)
+- 큐 패턴 활용 (`queue()` 함수)
+- Promise 체인은 적절히 await
+
+⚠️ **브라우저 호환성**
+- SharedArrayBuffer 지원 필요 (COOP/COEP 헤더)
+- WebGL 2.0 필수
+- 모던 브라우저 대상 (ES2020+)
+
+⚠️ **보안**
+- 사용자 업로드 파일은 클라이언트 검증 필수
+- XSS 방지: 사용자 입력은 sanitize
+- CORS 정책 준수
+
+## Context7 참조
+
+개발 관련 문서 검색 시:
+- `@thatopen/components`: Context7 MCP 활용
+- Three.js: Context7 MCP 또는 공식 문서
+- TypeScript: MS Learn Docs MCP 우선
+
+## 확장 계획
+
+### 향후 추가 예정 기능
+- [ ] 측정 도구 (거리, 면적, 부피)
+- [ ] 단면도 (Clipper)
+- [ ] 애니메이션 (카메라 경로)
+- [ ] 주석 및 마크업
+- [ ] 충돌 감지 (Clash Detection)
+- [ ] 스냅샷 저장
+- [ ] 다중 모델 비교
+
+### 리팩토링 우선순위
+1. main.ts 파일 분할 (모듈화)
+2. 상태 관리 패턴 도입 (Redux 또는 Zustand)
+3. 테스트 코드 작성 (Vitest)
+4. 컴포넌트 재사용성 개선
+
+---
+
+**마지막 업데이트**: 2025-11-03
+**유지관리자**: @indigoray
