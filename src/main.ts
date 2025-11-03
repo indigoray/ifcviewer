@@ -1205,12 +1205,6 @@ async function expandPropertiesToLevel(tableElement: HTMLElement, maxDepth: numb
   
   console.log('[Props] Table has data:', tableComponent.data.length, 'items');
   
-  // Expand to render DOM (and keep it expanded)
-  console.log('[Props] Setting table.expanded = true...');
-  tableComponent.expanded = true;
-  await waitForElementUpdate(table);
-  await delay(300);
-  
   const shadowRoot = table.shadowRoot;
   if (!shadowRoot) {
     return;
@@ -1222,65 +1216,62 @@ async function expandPropertiesToLevel(tableElement: HTMLElement, maxDepth: numb
     return;
   }
 
-  console.log('[Props] tableChildren found, children.length:', tableChildren.children.length);
-  
-  // Check all groups  
-  const allGroups = Array.from(tableChildren.querySelectorAll('bim-table-group')) as HTMLElement[];
-  console.log('[Props] All bim-table-group elements found:', allGroups.length);
-  
-  // Now manually collapse groups beyond maxDepth
-  console.log('[Props] Manually collapsing groups beyond depth', maxDepth);
+  // CRITICAL: tableChildren also has shadowRoot!
+  const tableChildrenShadow = (tableChildren as any).shadowRoot;
+  if (!tableChildrenShadow) {
+    console.log('[Props] No tableChildren shadowRoot');
+    return;
+  }
 
-  // Get direct child groups from tableChildren (they're in light DOM)
-  const getDirectGroups = (container: Element): HTMLElement[] => {
-    // Groups are rendered in light DOM, not shadow DOM
-    const groups = Array.from(container.querySelectorAll(':scope > bim-table-group')) as HTMLElement[];
-    console.log(`[Props] getDirectGroups found ${groups.length} groups in`, container.tagName);
-    
-    // Also try without :scope
-    const groups2 = Array.from(container.querySelectorAll('bim-table-group'));
-    console.log(`[Props] Without :scope found ${groups2.length} groups`);
-    
-    // Check direct children
-    const directChildren = Array.from(container.children);
-    console.log(`[Props] Direct children count: ${directChildren.length}`);
-    directChildren.forEach((child, i) => {
-      console.log(`[Props] Child ${i}: ${child.tagName}`);
-    });
-    
-    return groups;
-  };
-
-  // Helper to get depth of a group
-  const getGroupDepth = (group: HTMLElement): number => {
-    let depth = -1; // Start at -1 because tableChildren itself is depth 0
-    let current: HTMLElement | null = group;
-    while (current) {
-      if (current.tagName?.toLowerCase() === 'bim-table-children') {
-        depth++;
-      }
-      // Navigate through shadow DOM boundaries
-      const host = (current.getRootNode() as ShadowRoot)?.host;
-      current = host ? host.parentElement : current.parentElement;
-    }
-    return depth;
-  };
+  // Get root level groups from tableChildren's shadowRoot
+  const rootGroups = Array.from(tableChildrenShadow.querySelectorAll('bim-table-group')) as HTMLElement[];
+  console.log('[Props] Root groups found in shadowRoot:', rootGroups.length);
   
-  // Collapse all groups beyond maxDepth
-  for (const group of allGroups) {
-    const depth = getGroupDepth(group);
-    const groupElement = group as any;
-    
-    console.log(`[Props] Group depth=${depth}, childrenHidden=${groupElement.childrenHidden}`);
-    
-    if (depth > maxDepth && typeof groupElement.toggleChildren === 'function') {
-      if (!groupElement.childrenHidden) {
-        console.log(`[Props] Collapsing group at depth ${depth}`);
-        groupElement.toggleChildren(false);
-      }
-    }
+  if (rootGroups.length === 0) {
+    console.log('[Props] No root groups, cannot expand');
+    return;
   }
   
+  console.log('[Props] Now expanding to depth', maxDepth);
+
+  // Now selectively expand groups up to maxDepth (like clicking carets)
+  const expandToDepth = async (containerShadow: ShadowRoot, currentDepth: number): Promise<void> => {
+    if (currentDepth >= maxDepth) {
+      return;
+    }
+    
+    const groups = Array.from(containerShadow.querySelectorAll('bim-table-group')) as HTMLElement[];
+    console.log(`[Props] Expanding ${groups.length} groups at depth ${currentDepth}`);
+    
+    for (const group of groups) {
+      const groupElement = group as any;
+      const data = groupElement.data?.data || groupElement.data;
+      const name = data?.Name || 'NO_NAME';
+      
+      console.log(`[Props] Expanding group: ${name}`);
+      
+      // Use toggleChildren like UI does
+      if (typeof groupElement.toggleChildren === 'function') {
+        groupElement.toggleChildren(true);
+        await waitForElementUpdate(groupElement);
+        await delay(100);
+      }
+      
+      // Process children - tableChildren also has shadowRoot!
+      const groupShadow = groupElement.shadowRoot;
+      if (groupShadow) {
+        const childrenContainer = groupShadow.querySelector('bim-table-children');
+        if (childrenContainer) {
+          const childrenShadow = (childrenContainer as any).shadowRoot;
+          if (childrenShadow) {
+            await expandToDepth(childrenShadow, currentDepth + 1);
+          }
+        }
+      }
+    }
+  };
+  
+  await expandToDepth(tableChildrenShadow, 0);
   console.log('[Props] Expansion complete');
 }
 
@@ -1313,12 +1304,12 @@ async function expandToStoreyLevel(tableElement: HTMLElement) {
   }
   
   console.log('[Spatial] Table has data:', tableComponent.data.length, 'items');
+  console.log('[Spatial] Table value:', tableComponent.value?.length, 'items');
+  console.log('[Spatial] Table expanded state:', tableComponent.expanded);
   
-  // Expand to render DOM (and keep it expanded)
-  console.log('[Spatial] Setting table.expanded = true...');
-  tableComponent.expanded = true;
+  // Wait for table to render
   await waitForElementUpdate(table);
-  await delay(300);
+  await delay(200);
   
   const shadowRoot = table.shadowRoot;
   if (!shadowRoot) {
@@ -1331,66 +1322,72 @@ async function expandToStoreyLevel(tableElement: HTMLElement) {
     return;
   }
 
-  // Find all groups recursively
-  const findAllGroups = (root: Element | ShadowRoot): HTMLElement[] => {
-    const groups: HTMLElement[] = [];
-    groups.push(...Array.from(root.querySelectorAll('bim-table-group')) as HTMLElement[]);
-    for (const el of Array.from(root.querySelectorAll('*'))) {
-      const shadow = (el as any).shadowRoot;
-      if (shadow) groups.push(...findAllGroups(shadow));
-    }
-    return groups;
-  };
+  // CRITICAL: tableChildren also has shadowRoot!
+  const tableChildrenShadow = (tableChildren as any).shadowRoot;
+  if (!tableChildrenShadow) {
+    console.log('[Spatial] No tableChildren shadowRoot');
+    return;
+  }
 
-  const allGroups = [
-    ...findAllGroups(tableChildren),
-    ...((tableChildren as any).shadowRoot ? findAllGroups((tableChildren as any).shadowRoot) : [])
-  ];
+  // Get root level groups from tableChildren's shadowRoot
+  const rootGroups = Array.from(tableChildrenShadow.querySelectorAll('bim-table-group')) as HTMLElement[];
+  console.log('[Spatial] Root groups found in shadowRoot:', rootGroups.length);
   
-  console.log('[Spatial] All bim-table-group elements found:', allGroups.length);
+  if (rootGroups.length === 0) {
+    console.log('[Spatial] No root groups, cannot expand');
+    return;
+  }
+  
+  console.log('[Spatial] Now expanding to storey level');
 
-  // Get direct child groups from container (they're in light DOM)
-  const getDirectGroups = (container: Element): HTMLElement[] => {
-    // Groups are rendered in light DOM, not shadow DOM
-    const groups = Array.from(container.querySelectorAll(':scope > bim-table-group')) as HTMLElement[];
+  // Expand until we find IFCBUILDINGSTOREY (like clicking carets)
+  const expandUntilStorey = async (containerShadow: ShadowRoot): Promise<boolean> => {
+    const groups = Array.from(containerShadow.querySelectorAll('bim-table-group')) as HTMLElement[];
+    console.log(`[Spatial] Checking ${groups.length} groups`);
     
-    // Check direct children
-    const directChildren = Array.from(container.children);
-    console.log(`[Spatial] Direct children count: ${directChildren.length}, groups: ${groups.length}`);
-    
-    return groups;
-  };
-
-  // Find and collapse children of storey instances
-  let storeyFound = false;
-  for (let i = 0; i < allGroups.length; i++) {
-    const group = allGroups[i] as any;
-    const actualData = group.data?.data || group.data;
-    const name = actualData?.Name || actualData?.name || '';
-    
-    console.log(`[Spatial] Group ${i}: ${name}`);
-    
-    if (name === 'IFCBUILDINGSTOREY') {
-      storeyFound = true;
-      console.log('[Spatial] Found IFCBUILDINGSTOREY at index', i);
-      continue;
-    }
-    
-    // After finding IFCBUILDINGSTOREY, collapse children of storey instances
-    if (storeyFound && !name.startsWith('IFC')) {
-      if (typeof group.toggleChildren === 'function' && !group.childrenHidden) {
-        console.log(`[Spatial] Collapsing storey instance: ${name}`);
-        group.toggleChildren(false);
+    for (const group of groups) {
+      const groupElement = group as any;
+      const actualData = groupElement.data?.data || groupElement.data;
+      const name = actualData?.Name || actualData?.name || '';
+      
+      console.log(`[Spatial] Group: ${name}`);
+      
+      // Found IFCBUILDINGSTOREY - expand it to show storey instances
+      if (name === 'IFCBUILDINGSTOREY') {
+        console.log('[Spatial] Found IFCBUILDINGSTOREY, expanding it');
+        if (typeof groupElement.toggleChildren === 'function') {
+          groupElement.toggleChildren(true);
+          await waitForElementUpdate(groupElement);
+        }
+        return true;
+      }
+      
+      // For ALL groups (including model name), expand and search deeper
+      console.log(`[Spatial] Expanding ${name} to search deeper`);
+      if (typeof groupElement.toggleChildren === 'function') {
+        groupElement.toggleChildren(true);
+        await waitForElementUpdate(groupElement);
+        await delay(100);
+      }
+      
+      // Search in children - tableChildren also has shadowRoot!
+      const groupShadow = groupElement.shadowRoot;
+      if (groupShadow) {
+        const childrenContainer = groupShadow.querySelector('bim-table-children');
+        if (childrenContainer) {
+          const childrenShadow = (childrenContainer as any).shadowRoot;
+          if (childrenShadow) {
+            const found = await expandUntilStorey(childrenShadow);
+            if (found) return true;
+          }
+        }
       }
     }
     
-    // Stop when we hit another IFC type after storey instances
-    if (storeyFound && name.startsWith('IFC') && name !== 'IFCBUILDINGSTOREY') {
-      console.log('[Spatial] Reached next IFC type, stopping');
-      break;
-    }
-  }
+    return false;
+  };
   
+  await expandUntilStorey(tableChildrenShadow);
   console.log('[Spatial] Expansion complete');
 }
 

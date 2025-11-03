@@ -6,16 +6,18 @@
 bim-table (Table)
 └─ shadowRoot
    └─ bim-table-children (TableChildren)
-      ├─ bim-table-group (TableGroup) [Light DOM]
-      │  └─ shadowRoot
-      │     ├─ bim-table-row (TableRow)
-      │     └─ bim-table-children (자식이 있을 경우)
-      │        ├─ bim-table-group
-      │        │  └─ shadowRoot
-      │        │     └─ ...
-      │        └─ bim-table-group
-      ├─ bim-table-group [Light DOM]
-      └─ bim-table-group [Light DOM]
+      └─ shadowRoot  ⚠️ CRITICAL: tableChildren도 shadowRoot를 가짐!
+         ├─ bim-table-group (TableGroup)
+         │  └─ shadowRoot
+         │     ├─ bim-table-row (TableRow)
+         │     └─ bim-table-children (자식이 있을 경우)
+         │        └─ shadowRoot  ⚠️ 자식 tableChildren도 shadowRoot를 가짐!
+         │           ├─ bim-table-group
+         │           │  └─ shadowRoot
+         │           │     └─ ...
+         │           └─ bim-table-group
+         ├─ bim-table-group
+         └─ bim-table-group
 ```
 
 ## 주요 컴포넌트 분석
