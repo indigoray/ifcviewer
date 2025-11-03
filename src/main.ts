@@ -28,7 +28,6 @@ type UiController = {
   updateModelsTab(elements: { modelsList: HTMLElement; loadBtn: HTMLElement }): void;
   updatePropertiesTab(propertiesTable: HTMLElement): void;
   updateSpatialTreeTab(spatialTree: HTMLElement): void;
-  registerSpatialTreeExpand(handler: () => void): void;
 };
 
 type ToolbarMenuItem = {
@@ -151,7 +150,7 @@ async function bootstrap() {
 
   propertiesTable.preserveStructureOnFilter = true;
   propertiesTable.indentationInText = false;
-  propertiesTable.expanded = true;  // 기본적으로 1단계 확장
+  propertiesTable.expanded = false;
 
   ui.updatePropertiesTab(propertiesTable as unknown as HTMLElement);
 
@@ -162,53 +161,9 @@ async function bootstrap() {
   });
 
   spatialTree.preserveStructureOnFilter = true;
-  spatialTree.expanded = false;  // 루트만 펼친 뒤 스크립트로 IFCBUILDINGSTOREY까지 확장
-
-  // spatialTree 객체의 속성과 메서드들을 확인
-  console.log("[DEBUG] spatialTree object:", spatialTree);
-  console.log("[DEBUG] spatialTree methods:", Object.getOwnPropertyNames(Object.getPrototypeOf(spatialTree)));
-  console.log("[DEBUG] spatialTree properties:", Object.keys(spatialTree));
-
-  // storey 확장 관련 메서드가 있는지 확인
-  const prototype = Object.getPrototypeOf(spatialTree);
-  const allMethods = [];
-  let current = prototype;
-  while (current && current !== Object.prototype) {
-    allMethods.push(...Object.getOwnPropertyNames(current));
-    current = Object.getPrototypeOf(current);
-  }
-  console.log("[DEBUG] All spatialTree methods in prototype chain:", allMethods.filter(m => m.includes('expand') || m.includes('storey') || m.includes('level')));
-
-  // expandToStoreys 같은 메서드가 있는지 직접 확인
-  if (typeof (spatialTree as any).expandToStoreys === 'function') {
-    console.log("[DEBUG] Found expandToStoreys method! Using built-in function.");
-  } else {
-    console.log("[DEBUG] No expandToStoreys method found, using custom implementation.");
-  }
+  spatialTree.expanded = false;
 
   ui.updateSpatialTreeTab(spatialTree as unknown as HTMLElement);
-  ui.registerSpatialTreeExpand(() => {
-    // spatialTree를 직접 전달
-    void expandToStoreyLevel(spatialTree as unknown as HTMLElement);
-  });
-
-  // 모델 로드 시 SpatialTree 업데이트
-  fragments.list.onItemSet.add(async () => {
-    console.log("Model loaded, updating spatial tree");
-    const allModels = Array.from(fragments.list.values());
-    // updateSpatialTree({ models: allModels }); // 함수가 scope에 없음 - 주석 처리
-
-    // 디버깅용으로만 데이터 구조 확인 (로그 최소화)
-    await delay(1000);
-    await analyzeSpatialTreeData(spatialTree as unknown as HTMLElement);
-
-    // 모델 로드 시 자동 확장 제거
-    // if (spatialTree && typeof spatialTree === 'object') {
-    //   if ('expanded' in spatialTree) {
-    //     (spatialTree as any).expanded = true;
-    //   }
-    // }
-  });
 
   const toolbar = buildToolbar({
     world,
@@ -533,7 +488,6 @@ function buildUi(root: HTMLElement): UiController {
   const tabButtons = [modelsTabBtn, propertiesTabBtn, spatialTreeTabBtn];
   const tabs = [modelsTab, propertiesTab, spatialTreeTab];
 
-  let spatialTreeExpandHandler: (() => void) | null = null;
   let spatialTreeElement: HTMLElement | null = null;
 
   const setTreeControlsEnabled = (enabled: boolean) => {
@@ -550,10 +504,8 @@ function buildUi(root: HTMLElement): UiController {
   });
 
   expandStoreyButton.addEventListener("click", () => {
-    console.log("[DEBUG] Expand to Storey clicked");
     if (!spatialTreeElement) return;
 
-    // 중복 호출 방지
     if (expandStoreyButton.disabled) return;
     expandStoreyButton.disabled = true;
 
@@ -579,13 +531,6 @@ function buildUi(root: HTMLElement): UiController {
       if (contentTab) {
         contentTab.classList.add("active");
       }
-
-      // spatial tree 탭 전환 시 자동 확장 제거
-      // if (targetTab === "spatial-tree") {
-      //   window.requestAnimationFrame(() => {
-      //     spatialTreeExpandHandler?.();
-      //   });
-      // }
     });
   });
 
@@ -649,9 +594,6 @@ function buildUi(root: HTMLElement): UiController {
       spatialTreeMessage.style.display = "none";
       spatialTreeElement = spatialTree;
       setTreeControlsEnabled(true);
-    },
-    registerSpatialTreeExpand(handler: () => void) {
-      spatialTreeExpandHandler = handler;
     }
   };
 }
@@ -1227,261 +1169,86 @@ function getPostproduction(world: ViewerWorld) {
   return post;
 }
 
-async function analyzeSpatialTreeData(tableElement: HTMLElement) {
-  const table = findTableElement(tableElement);
-  if (!table) return;
-
-  // 루트 그룹들을 찾기
-  const roots = await waitForRootGroups(table);
-
-  // 분석은 하지만 로그는 최소화
-  if (roots.length > 0) {
-    console.log(`[DEBUG] Spatial tree has ${roots.length} root groups`);
-  }
-}
-
-// Removed: analyzeGroupsRecursive - not needed for production
-
+/**
+ * Expands spatial tree to building storey level.
+ * Fully expands the tree first, then collapses children of storey instances.
+ */
 async function expandToStoreyLevel(tableElement: HTMLElement) {
-  console.log("[DEBUG] Expanding to storey level...");
+  const table = tableElement.tagName?.toLowerCase() === 'bim-table' 
+    ? tableElement 
+    : findTableElement(tableElement);
   
-  // tableElement가 이미 bim-table인지 확인
-  let table: any = tableElement;
-  if (tableElement.tagName?.toLowerCase() !== 'bim-table') {
-    table = findTableElement(tableElement);
-    if (!table) {
-      console.log("[DEBUG] No table found");
-      return;
-    }
-  }
+  if (!table) return;
 
   const tableComponent = table as any;
   
-  // 먼저 전체 펼침 (expanded = true)
+  // Expand entire tree first
   tableComponent.expanded = true;
   await waitForElementUpdate(table);
-  await new Promise(resolve => setTimeout(resolve, 500)); // DOM이 완전히 렌더링되도록 대기
+  await delay(500);
   
-  // Shadow DOM에서 STOREY 레벨까지만 표시
-  if (table.shadowRoot) {
-    const tableChildren = table.shadowRoot.querySelector('bim-table-children');
-    
-    if (tableChildren) {
-      // bim-table-children 안의 모든 bim-table-group 찾기 (재귀적으로)
-      function findAllGroups(root: Element | ShadowRoot): HTMLElement[] {
-        const groups: HTMLElement[] = [];
-        const directGroups = root.querySelectorAll('bim-table-group');
-        groups.push(...Array.from(directGroups) as HTMLElement[]);
-        
-        const allElements = root.querySelectorAll('*');
-        for (const el of allElements) {
-          const shadow = (el as any).shadowRoot;
-          if (shadow) {
-            groups.push(...findAllGroups(shadow));
-          }
-        }
-        return groups;
-      }
-      
-      // 모든 그룹 찾기
-      let allGroups: HTMLElement[] = [];
-      allGroups.push(...findAllGroups(tableChildren));
-      
-      const childrenShadow = (tableChildren as any).shadowRoot;
-      if (childrenShadow) {
-        allGroups.push(...findAllGroups(childrenShadow));
-      }
-      
-      // STOREY 타입 그룹을 찾고, 그 자식들(실제 storey 인스턴스들)의 자식들을 접기
-      for (let i = 0; i < allGroups.length; i++) {
-        const groupElement = allGroups[i] as any;
-        const data = groupElement.data;
-        
-        if (data) {
-          const name = data.Name || data.name || data.data?.Name || data.data?.name || '';
-          
-          // IFCBUILDINGSTOREY 타입 그룹을 찾음
-          if (name === 'IFCBUILDINGSTOREY') {
-            // 다음 그룹들(실제 storey 인스턴스들)의 자식을 접기
-            for (let j = i + 1; j < allGroups.length; j++) {
-              const nextGroup = allGroups[j] as any;
-              const nextData = nextGroup.data;
-              
-              if (nextData) {
-                const nextName = nextData.Name || nextData.name || nextData.data?.Name || nextData.data?.name || '';
-                
-                // 다음 IFC 타입을 만나면 중단
-                if (nextName.startsWith('IFC')) {
-                  break;
-                }
-                
-                // storey 인스턴스의 자식들을 접기
-                if (typeof nextGroup.toggleChildren === 'function') {
-                  nextGroup.toggleChildren(false);
-                }
-              }
-            }
-            
-            break;
-          }
-        }
-      }
-    }
-  }
-}
-
-async function collapseAfterStorey(table: HTMLElement) {
+  // Collapse children of storey instances
   const shadowRoot = table.shadowRoot;
   if (!shadowRoot) return;
-  
-  // 모든 bim-table-group 요소 찾기
-  const allGroups = Array.from(shadowRoot.querySelectorAll('bim-table-group'));
-  console.log(`[DEBUG] Found ${allGroups.length} groups in shadow DOM`);
-  
-  let foundStorey = false;
-  
-  for (const group of allGroups) {
-    const groupElement = group as any;
-    const data = groupElement.data;
+
+  const tableChildren = shadowRoot.querySelector('bim-table-children');
+  if (!tableChildren) return;
+
+  // Recursively find all bim-table-group elements in shadow DOM
+  const findAllGroups = (root: Element | ShadowRoot): HTMLElement[] => {
+    const groups: HTMLElement[] = [];
+    groups.push(...Array.from(root.querySelectorAll('bim-table-group')) as HTMLElement[]);
     
-    if (data) {
-      const name = data.Name || data.name || '';
-      
-      if (name.includes('STOREY') || name.includes('BUILDINGSTOREY')) {
-        foundStorey = true;
-        console.log(`[DEBUG] Found STOREY: ${name}`);
+    for (const el of Array.from(root.querySelectorAll('*'))) {
+      const shadow = (el as any).shadowRoot;
+      if (shadow) groups.push(...findAllGroups(shadow));
+    }
+    return groups;
+  };
+  
+  const allGroups = [
+    ...findAllGroups(tableChildren),
+    ...((tableChildren as any).shadowRoot ? findAllGroups((tableChildren as any).shadowRoot) : [])
+  ];
+  
+  // Find IFCBUILDINGSTOREY type and collapse children of its instances
+  for (let i = 0; i < allGroups.length; i++) {
+    const group = allGroups[i] as any;
+    const name = group.data?.Name || group.data?.name || '';
+    
+    if (name === 'IFCBUILDINGSTOREY') {
+      // Collapse children of storey instances (next groups until next IFC type)
+      for (let j = i + 1; j < allGroups.length; j++) {
+        const nextGroup = allGroups[j] as any;
+        const nextName = nextGroup.data?.Name || nextGroup.data?.name || '';
         
-        // STOREY의 자식들을 접기
-        if (typeof groupElement.toggleChildren === 'function') {
-          groupElement.toggleChildren(false);
+        if (nextName.startsWith('IFC')) break;
+        
+        if (typeof nextGroup.toggleChildren === 'function') {
+          nextGroup.toggleChildren(false);
         }
       }
+      break;
     }
   }
-}
-
-async function expandToStoreyRecursive(groups: HTMLElement[], depth = 0, maxDepth = 2) {
-  for (const group of groups) {
-    // 최대 깊이에 도달하면 멈춤 (storey 레벨까지만)
-    if (depth >= maxDepth) {
-      if (hasExpandableChildren(group)) {
-        await ensureGroupOpened(group);
-      }
-      continue;
-    }
-
-    // 현재 그룹 확장
-    if (hasExpandableChildren(group)) {
-      await ensureGroupOpened(group);
-      const children = await waitForChildGroups(group);
-      if (children.length > 0) {
-        await expandToStoreyRecursive(children, depth + 1, maxDepth);
-      }
-    }
-  }
-}
-
-function isStoreyGroup(data: any): boolean {
-  if (!data || typeof data !== 'object') return false;
-
-  // IFCBUILDINGSTOREY 타입 확인
-  const type = data.type || data.ifcType || data.Type;
-  if (type && typeof type === 'string') {
-    return type.toUpperCase().includes('IFCBUILDINGSTOREY') ||
-           type.toUpperCase().includes('BUILDINGSTOREY');
-  }
-
-  // 이름으로도 확인 (fallback)
-  const name = data.name || data.Name;
-  if (name && typeof name === 'string') {
-    const upperName = name.toUpperCase();
-    return upperName.includes('STOREY') ||
-           upperName.includes('STORY') ||
-           upperName.includes('FLOOR');
-  }
-
-  return false;
 }
 
 function findTableElement(element: any): HTMLElement | null {
-  console.log("[DEBUG] findTableElement called with:", element);
-
-  // element가 HTMLElement이고 bim-table인 경우
   if (element && typeof element === 'object' && 'tagName' in element && element.tagName?.toLowerCase() === "bim-table") {
-    console.log("[DEBUG] Element is already a bim-table");
     return element as HTMLElement;
   }
 
-  // element가 HTMLElement인 경우 자식에서 bim-table 찾기
   if (element && typeof element === 'object' && 'querySelector' in element) {
     const nested = (element as HTMLElement).querySelector("bim-table");
-    if (nested) {
-      console.log("[DEBUG] Found nested bim-table");
-      return nested as HTMLElement;
-    }
+    if (nested) return nested as HTMLElement;
   }
 
-  // element 자체가 bim-table 컴포넌트인 경우 (shadow DOM 등)
   if (element && typeof element === 'object' && 'shadowRoot' in element) {
-    console.log("[DEBUG] Element has shadowRoot, looking for bim-table in shadow");
     const shadowTable = (element as any).shadowRoot?.querySelector("bim-table");
-    if (shadowTable) {
-      return shadowTable as HTMLElement;
-    }
+    if (shadowTable) return shadowTable as HTMLElement;
   }
 
-  console.log("[DEBUG] No bim-table found");
   return null;
-}
-
-async function waitForRootGroups(table: HTMLElement) {
-  for (let attempt = 0; attempt < 40; attempt++) {
-    const groups = collectRootGroups(table);
-    if (groups.length > 0) return groups;
-    await waitForElementUpdate(table);
-    await delay(50);
-  }
-  return [];
-}
-
-function collectRootGroups(table: HTMLElement): HTMLElement[] {
-  const tableElement = table as any;
-
-  // shadow root에서 그룹 찾기
-  const root = table.shadowRoot;
-  if (root) {
-    const shadowGroups = Array.from(root.querySelectorAll("bim-table-group")) as HTMLElement[];
-    if (shadowGroups.length > 0) {
-      console.log(`[DEBUG] Found ${shadowGroups.length} bim-table-group elements in shadow root`);
-      return shadowGroups;
-    }
-  }
-
-  console.log("[DEBUG] No bim-table-group elements found in shadow root");
-  return [];
-}
-
-function collectChildGroups(group: HTMLElement): HTMLElement[] {
-  const shadow = group.shadowRoot;
-  if (!shadow) return [];
-  const childrenHost = shadow.querySelector("bim-table-children");
-  if (!(childrenHost instanceof HTMLElement)) return [];
-  const result = new Set<HTMLElement>();
-  const directChildren = childrenHost.querySelectorAll("bim-table-group");
-  directChildren.forEach((child) => result.add(child as HTMLElement));
-  const shadowChildren = childrenHost.shadowRoot?.querySelectorAll("bim-table-group");
-  shadowChildren?.forEach((child) => result.add(child as HTMLElement));
-  const storedGroups = (childrenHost as any)._groups as Iterable<HTMLElement> | undefined;
-  if (storedGroups) {
-    for (const child of storedGroups) {
-      if (child instanceof HTMLElement) result.add(child);
-    }
-  }
-  return Array.from(result).filter((child) => findParentGroup(child) === group);
-}
-
-function getGroupData(group: HTMLElement): any {
-  return (group as any).data;
 }
 
 async function waitForElementUpdate(element: any) {
@@ -1489,7 +1256,7 @@ async function waitForElementUpdate(element: any) {
     const updateComplete = element?.updateComplete;
     if (updateComplete instanceof Promise) await updateComplete;
   } catch (error) {
-    console.warn("Failed waiting for update", error);
+    // Silently ignore update errors
   }
   await delay(0);
 }
@@ -1498,112 +1265,22 @@ function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-const MAX_AUTO_EXPANSION_DEPTH = 5;
-
-function computeGroupDepth(group: HTMLElement): number {
-  let depth = 0;
-  let cursor: Node | null = group;
-  while (cursor) {
-    if (cursor instanceof HTMLElement && cursor.tagName.toLowerCase() === "bim-table-group") {
-      depth += 1;
-    }
-    cursor = getParentNodeAcrossShadow(cursor);
-  }
-  return depth;
-}
-
-function getParentNodeAcrossShadow(node: Node | null): Node | null {
-  if (!node) return null;
-  if (node instanceof ShadowRoot) {
-    return node.host;
-  }
-  const parent = node.parentNode;
-  if (!parent) return null;
-  if (parent instanceof ShadowRoot) {
-    return parent;
-  }
-  return parent;
-}
-
-function findParentGroup(group: HTMLElement): HTMLElement | null {
-  let cursor: Node | null = group;
-  while ((cursor = getParentNodeAcrossShadow(cursor))) {
-    if (cursor instanceof HTMLElement && cursor.tagName.toLowerCase() === "bim-table-group") {
-      return cursor;
-    }
-  }
-  return null;
-}
-
-async function expandGroupsRecursive(groups: HTMLElement[], depth: number, maxDepth: number) {
-  if (depth > maxDepth) return;
-  for (const group of groups) {
-    if (!hasExpandableChildren(group)) continue;
-    await ensureGroupOpened(group);
-    const children = await waitForChildGroups(group);
-    if (children.length === 0) continue;
-    await expandGroupsRecursive(children, depth + 1, maxDepth);
-  }
-}
-
-async function ensureGroupOpened(group: HTMLElement) {
-  const controller = group as any;
-  if (!controller || typeof controller.toggleChildren !== "function") return;
-  if (!controller.childrenHidden) return;
-  controller.toggleChildren(true);
-  await waitForElementUpdate(controller);
-}
-
-async function waitForChildGroups(group: HTMLElement) {
-  if (!hasExpandableChildren(group)) return [];
-  for (let attempt = 0; attempt < 40; attempt++) {
-    const children = collectChildGroups(group);
-    if (children.length > 0) return children;
-    await waitForElementUpdate(group);
-    await delay(50);
-  }
-  return [];
-}
-
 async function expandAllInSpatialTree(tableElement: HTMLElement) {
-  console.log("[DEBUG] Expand All clicked");
   const table = findTableElement(tableElement);
-  if (!table) {
-    console.log("[DEBUG] No table found for expand all");
-    return;
-  }
+  if (!table) return;
   
-  // 먼저 모두 접기
-  console.log("[DEBUG] Collapsing all first");
   (table as any).expanded = false;
   await waitForElementUpdate(table);
-  await new Promise(resolve => setTimeout(resolve, 100));
+  await delay(100);
   
-  // 다시 모두 펼치기
-  console.log("[DEBUG] Setting table.expanded = true");
   (table as any).expanded = true;
   await waitForElementUpdate(table);
-  console.log("[DEBUG] Expand all completed");
 }
 
 async function collapseAllInSpatialTree(tableElement: HTMLElement) {
-  console.log("[DEBUG] Collapse All clicked");
   const table = findTableElement(tableElement);
-  if (!table) {
-    console.log("[DEBUG] No table found for collapse all");
-    return;
-  }
-  console.log("[DEBUG] Setting table.expanded = false");
+  if (!table) return;
+  
   (table as any).expanded = false;
   await waitForElementUpdate(table);
-  console.log("[DEBUG] Collapse all completed");
-}
-
-function hasExpandableChildren(group: HTMLElement): boolean {
-  const data = getGroupData(group);
-  if (!data) return false;
-  const children = data.children;
-  if (Array.isArray(children)) return children.length > 0;
-  if (typeof children === "string") return children.trim().length > 0;
-  return Boolean(children);
 }
